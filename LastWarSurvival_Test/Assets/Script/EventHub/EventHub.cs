@@ -1,6 +1,4 @@
 using System;
-using System.Collections.Generic;
-using Unity.VisualScripting;
 using UnityEngine;
 
 public class EventHub<T> where T : class, new()
@@ -12,10 +10,10 @@ public class EventHub<T> where T : class, new()
 
     public void Unsubscribe(Action<T> listener) { lock (_lock) _onEvent -= listener; }
 
-    public void Subscribe(Action<T> l, EventBinder b)
+    public void Subscribe(Action<T> listener, EventBinder binder)
     {
-        lock (_lock) _onEvent += l;
-        b.AddUnsubscriber(() => { lock (_lock) _onEvent -= l; });
+        lock (_lock) _onEvent += listener;
+        binder.AddUnsubscriber(() => { lock (_lock) _onEvent -= listener; });
     }
 
     public void Raise(T args)
@@ -26,7 +24,6 @@ public class EventHub<T> where T : class, new()
         snapshot?.Invoke(args);
     }
 
-    // cần fix, có thể bỏ đi sau này vì nó bắt buộc new T() -> GC
     public void Raise()
     {
         CoreEvents.LastEventName = typeof(T).Name;
@@ -39,21 +36,34 @@ public class EventHub<T> where T : class, new()
 public sealed class GameStartEvent
 {
     public bool IsStarted { get; set; }
-    
+
     public GameStartEvent()
     {
         IsStarted = !IsStarted;
     }
 }
 
+public sealed class CardAddQuantitySpawnedEvent
+{
+    public CardAddQuantity Card { get; set; }
+    public PointBaker PointBaker { get; set; }
+    public float MoveSpeed { get; set; }
+    public float InitialDistance { get; set; }
+    public EntityId SpawnZoneId { get; set; }
+}
 
-/// <summary>
-/// Centralized Event 
-/// </summary>
+public sealed class CardAddQuantityReachedEndEvent
+{
+    public CardAddQuantity Card { get; set; }
+    public PointBaker PointBaker { get; set; }
+    public EntityId SpawnZoneId { get; set; }
+}
+
 public static class CoreEvents
 {
     public static string LastEventName;
 
     public static readonly EventHub<GameStartEvent> gameStart = new EventHub<GameStartEvent>();
-    
+    public static readonly EventHub<CardAddQuantitySpawnedEvent> cardAddQuantitySpawned = new EventHub<CardAddQuantitySpawnedEvent>();
+    public static readonly EventHub<CardAddQuantityReachedEndEvent> cardAddQuantityReachedEnd = new EventHub<CardAddQuantityReachedEndEvent>();
 }

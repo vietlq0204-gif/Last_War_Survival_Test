@@ -51,6 +51,7 @@ public class ListPoint
         {
             positions.Clear();
             cumulativeLengths.Clear();
+            segStartPosIndex.Clear();
             totalLength = 0f;
         }
     }
