@@ -79,6 +79,11 @@ namespace Vit.SpawnKit.Services
             RegisterFromCatalog();
         }
 
+        private void Start()
+        {
+            Prewarm(catalog);
+        }
+
         private void OnDestroy()
         {
             CancelPendingAsyncSpawns();
