@@ -5,7 +5,7 @@ using Vit.SpawnKit.ScriptableObjects;
 using Vit.SpawnKit.Api;
 using Vit.SpawnKit.Data;
 
-public class CardAddQuantitySpawnZone : MonoBehaviour
+public partial class CardAddQuantitySpawnZone : CoreEventBase
 {
     [SerializeField] private SpawnPresetSO preset;
 
@@ -15,12 +15,12 @@ public class CardAddQuantitySpawnZone : MonoBehaviour
     {
         ReturnAllToPool();
     }
+    
+}
 
-    private void Start()
-    {
-        SpawnCard();
-    }
-
+// logic
+public partial class CardAddQuantitySpawnZone
+{
     private void SpawnCard()
     {
         var handle = SpawnKit.Spawn(preset, transform);
@@ -34,5 +34,21 @@ public class CardAddQuantitySpawnZone : MonoBehaviour
             handle.Despawn();
         }
         _handle.Clear();
+    }
+}
+
+// event
+public partial class CardAddQuantitySpawnZone
+{
+    public override void SubscribeEvents()
+    {
+        CoreEvents.gameStart.Subscribe(e => SpawnCardWhenGameStart(e), Binder);
+    }
+
+    private void SpawnCardWhenGameStart(GameStartEvent e)
+    {
+        var isStart = e.IsStarted;
+        if (!isStart) return;
+        SpawnCard();
     }
 }
