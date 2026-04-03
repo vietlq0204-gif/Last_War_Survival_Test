@@ -1,16 +1,10 @@
 using UnityEngine;
 
+
+/// <summary>
+/// định nghĩa hành vi của object này sau khi được spawn
+/// </summary>
 public class CardAddQuantity : MonoBehaviour
 {
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
-    {
-        
-    }
 
-    // Update is called once per frame
-    void Update()
-    {
-        
-    }
 }

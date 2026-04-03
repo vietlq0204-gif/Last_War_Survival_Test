@@ -8,7 +8,6 @@ using Vit.SpawnKit.Data;
 public partial class CardAddQuantitySpawnZone : CoreEventBase
 {
     [SerializeField] private SpawnPresetSO preset;
-
     private readonly List<SpawnHandle> _handle = new();
 
     private void OnDisable()
