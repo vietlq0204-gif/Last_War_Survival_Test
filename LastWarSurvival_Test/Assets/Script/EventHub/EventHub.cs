@@ -57,6 +57,34 @@ public struct ObjectReachedEndInfo
     public EntityId SpawnZoneId { get; set; }
 }
 
+public sealed class CollitionEvent
+{
+    public enum CollitionType
+    {
+        Trigger = 0,
+        Collider = 1
+    }
+
+    public enum CollitionTag
+    {
+        Player = 0,
+        Enemey = 1,
+        Obstacle
+    }
+    
+    public CollitionType collitionType { get; set; }
+    public CollitionTag collitionTag { get; set; }
+    
+    // CardAddQuantitySO
+
+    public CollitionEvent(CollitionType collitionType, CollitionTag collitionTag/*, CardAddQuantitySO cardAddQuantitySO*/)
+    {
+        this.collitionType = collitionType;
+        this.collitionTag = collitionTag;
+        // this.cardAddQuantitySO = cardAddQuantitySO;
+    }
+}
+
 public static class CoreEvents
 {
     public static string LastEventName;
