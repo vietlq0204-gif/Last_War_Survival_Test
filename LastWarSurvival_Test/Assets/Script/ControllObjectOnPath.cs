@@ -20,6 +20,7 @@ public class ControllObjectOnPath : CoreEventBase
 {
     private struct RuntimeObject
     {
+        public EntityId instanceId;
         public ObjectSpawned spawnedObject;
         public Transform cachedTransform;
         public Rigidbody cachedRigidbody;
@@ -138,16 +139,17 @@ public class ControllObjectOnPath : CoreEventBase
                 continue;
 
             float speed = entry.MoveSpeed > 0f ? entry.MoveSpeed : defaultMoveSpeed;
-            EntityId instanceId = spawnedObject.gameObject.GetEntityId();
+            EntityId instanceId = spawnedObject.CachedEntityId;
             var cachedTransform = spawnedObject.CachedTransform;
             var cachedRigidbody = spawnedObject.CachedRigidbody;
 
-            spawnedObject.SetControlledCollisionEnabled(false);
+            // spawnedObject.SetControlledCollisionEnabled(false);
             ApplyPosition(cachedTransform, cachedRigidbody, worldPosition, useRigidbodyMove: false);
 
             if (_runtimeIndexMap.TryGetValue(instanceId, out int existingIndex))
             {
                 var runtimeObject = _runtimeObjects[existingIndex];
+                runtimeObject.instanceId = instanceId;
                 runtimeObject.spawnedObject = spawnedObject;
                 runtimeObject.cachedTransform = cachedTransform;
                 runtimeObject.cachedRigidbody = cachedRigidbody;
@@ -162,6 +164,7 @@ public class ControllObjectOnPath : CoreEventBase
                 _runtimeIndexMap.Add(instanceId, _runtimeObjects.Count);
                 _runtimeObjects.Add(new RuntimeObject
                 {
+                    instanceId = instanceId,
                     spawnedObject = spawnedObject,
                     cachedTransform = cachedTransform,
                     cachedRigidbody = cachedRigidbody,
@@ -356,7 +359,7 @@ public class ControllObjectOnPath : CoreEventBase
             var watcher = _spawnWindowWatchers[i];
             if (closestDistance < watcher.threshold) continue;
 
-            _spawnWindowWatchers.RemoveAt(i);
+            RemoveSpawnWindowWatcherAt(i);
             watcher.callback?.Invoke();
         }
     }
@@ -364,23 +367,28 @@ public class ControllObjectOnPath : CoreEventBase
     private void RemoveRuntimeObjectAt(int index)
     {
         int lastIndex = _runtimeObjects.Count - 1;
-        EntityId removedId = _runtimeObjects[index].spawnedObject != null
-            ? _runtimeObjects[index].spawnedObject.gameObject.GetEntityId()
-            : default;
+        EntityId removedId = _runtimeObjects[index].instanceId;
 
         if (index != lastIndex)
         {
             var lastObject = _runtimeObjects[lastIndex];
             _runtimeObjects[index] = lastObject;
 
-            if (lastObject.spawnedObject != null)
-                _runtimeIndexMap[lastObject.spawnedObject.gameObject.GetEntityId()] = index;
+            if (lastObject.instanceId != default)
+                _runtimeIndexMap[lastObject.instanceId] = index;
         }
 
         _runtimeObjects.RemoveAt(lastIndex);
 
         if (removedId != default)
             _runtimeIndexMap.Remove(removedId);
+    }
+
+    private void RemoveSpawnWindowWatcherAt(int index)
+    {
+        int lastIndex = _spawnWindowWatchers.Count - 1;
+        _spawnWindowWatchers[index] = _spawnWindowWatchers[lastIndex];
+        _spawnWindowWatchers.RemoveAt(lastIndex);
     }
 
     private static void ApplyPosition(Transform cachedTransform, Rigidbody cachedRigidbody, Vector3 worldPosition, bool useRigidbodyMove)

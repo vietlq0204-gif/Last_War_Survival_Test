@@ -181,7 +181,7 @@ public abstract class SpawnZone : CoreEventBase
             var spawnedObject = entry.SpawnedObject;
             if (spawnedObject == null) continue;
 
-            if (!_activeInstances.Remove(spawnedObject.gameObject.GetEntityId())) continue;
+            if (!_activeInstances.Remove(spawnedObject.CachedEntityId)) continue;
 
             _despawnBuffer.Add(spawnedObject.gameObject);
             removedCount++;
@@ -195,7 +195,7 @@ public abstract class SpawnZone : CoreEventBase
 
     protected bool IsActiveInstance(ObjectSpawned spawned)
     {
-        return spawned != null && _activeInstances.ContainsKey(spawned.gameObject.GetEntityId());
+        return spawned != null && _activeInstances.ContainsKey(spawned.CachedEntityId);
     }
 
     protected virtual float ResolveMoveSpeedFor(ObjectSpawned spawnedObject)
@@ -326,7 +326,7 @@ public abstract class SpawnZone : CoreEventBase
             var instance = _spawnResultsBuffer[i];
             if (instance == null || !instance.TryGetComponent(out ObjectSpawned spawnedObject)) continue;
 
-            _activeInstances[instance.GetEntityId()] = spawnedObject;
+            _activeInstances[spawnedObject.CachedEntityId] = spawnedObject;
             float distance = useInitialDistances
                 ? ResolveInitialDistanceForIndex(startStreamIndex + registeredCount)
                 : ResolveRefillDistance();
@@ -349,7 +349,7 @@ public abstract class SpawnZone : CoreEventBase
                 var spawnedObject = _spawnBatchBuffer[i].SpawnedObject;
                 if (spawnedObject == null) continue;
 
-                _activeInstances.Remove(spawnedObject.gameObject.GetEntityId());
+                _activeInstances.Remove(spawnedObject.CachedEntityId);
                 _despawnBuffer.Add(spawnedObject.gameObject);
             }
 

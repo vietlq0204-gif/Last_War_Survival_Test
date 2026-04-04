@@ -5,16 +5,19 @@ public class ObjectSpawned : MonoBehaviour, ISpawnPoolCallbacks
 {
     [SerializeField] private bool disableCollidersWhileControlled = true;
 
+    private EntityId _cachedEntityId;
     private Transform _cachedTransform;
     private Rigidbody _cachedRigidbody;
     private Collider[] _cachedColliders;
     private bool[] _defaultColliderStates;
 
+    public EntityId CachedEntityId => _cachedEntityId;
     public Transform CachedTransform => _cachedTransform;
     public Rigidbody CachedRigidbody => _cachedRigidbody;
 
     protected virtual void Awake()
     {
+        _cachedEntityId = gameObject.GetEntityId();
         _cachedTransform = transform;
         _cachedRigidbody = GetComponent<Rigidbody>();
         CacheColliders();
@@ -34,14 +37,16 @@ public class ObjectSpawned : MonoBehaviour, ISpawnPoolCallbacks
 
     public void SetControlledCollisionEnabled(bool enabled)
     {
-        if (_cachedColliders == null) return;
+        if (_cachedColliders == null || _defaultColliderStates == null) return;
 
         for (int i = 0; i < _cachedColliders.Length; i++)
         {
             var collider = _cachedColliders[i];
             if (collider == null) continue;
 
-            collider.enabled = enabled && _defaultColliderStates[i];
+            bool targetState = enabled && _defaultColliderStates[i];
+            if (collider.enabled != targetState)
+                collider.enabled = targetState;
         }
     }
 
@@ -58,14 +63,16 @@ public class ObjectSpawned : MonoBehaviour, ISpawnPoolCallbacks
 
     private void RestoreDefaultColliderStates()
     {
-        if (_cachedColliders == null) return;
+        if (_cachedColliders == null || _defaultColliderStates == null) return;
 
         for (int i = 0; i < _cachedColliders.Length; i++)
         {
             var collider = _cachedColliders[i];
             if (collider == null) continue;
 
-            collider.enabled = _defaultColliderStates[i];
+            bool targetState = _defaultColliderStates[i];
+            if (collider.enabled != targetState)
+                collider.enabled = targetState;
         }
     }
 
