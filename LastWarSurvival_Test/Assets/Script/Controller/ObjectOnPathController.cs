@@ -16,7 +16,7 @@ public enum PathUpdateMode
 }
 
 [RequireComponent(typeof(PointBaker))]
-public class ControllObjectOnPath : CoreEventBase
+public class ObjectOnPathController : CoreEventBase
 {
     private struct RuntimeObject
     {

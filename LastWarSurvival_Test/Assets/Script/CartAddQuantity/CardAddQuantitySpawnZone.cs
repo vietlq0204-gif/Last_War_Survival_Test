@@ -3,7 +3,7 @@ using UnityEngine;
 
 public class CardAddQuantitySpawnZone : SpawnZone
 {
-    [SerializeField] private ControllObjectOnPath pathController;
+    [SerializeField] private ObjectOnPathController pathController;
     [SerializeField, Min(0.01f)] private float moveSpeed = 2f;
     [SerializeField] private bool autoFillRoadOnStart = true;
     [SerializeField, Min(1)] private int loopCardCount = 1;
@@ -126,19 +126,19 @@ public class CardAddQuantitySpawnZone : SpawnZone
         if (pathController != null) return;
         if (PointBaker == null) return;
 
-        if (PointBaker.TryGetComponent(out ControllCardAddQuantityOnPath typedController))
+        if (PointBaker.TryGetComponent(out CardAddQuantityOnPathController typedController))
         {
             pathController = typedController;
             return;
         }
 
-        if (PointBaker.TryGetComponent(out ControllObjectOnPath genericController))
+        if (PointBaker.TryGetComponent(out ObjectOnPathController genericController))
         {
             pathController = genericController;
             return;
         }
 
-        pathController = PointBaker.gameObject.AddComponent<ControllCardAddQuantityOnPath>();
+        pathController = PointBaker.gameObject.AddComponent<CardAddQuantityOnPathController>();
     }
 
     private void EnsureControllerSubscribed()

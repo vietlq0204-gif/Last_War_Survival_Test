@@ -1,4 +1,4 @@
-public class ControllCardAddQuantityOnPath : ControllObjectOnPath
+public class CardAddQuantityOnPathController : ObjectOnPathController
 {
     protected override bool AcceptSpawnedObject(ObjectSpawned spawnedObject)
     {
