@@ -219,6 +219,19 @@ public sealed class GameObjectPool : IPool
         return Trim(0);
     }
 
+    public void EnsureCapacity(int desiredMaxSize, int desiredPrewarmCount, int desiredGrowStep, bool allowGrow)
+    {
+        if (_disposed) return;
+
+        _config.maxSize = Mathf.Max(_config.maxSize, desiredMaxSize);
+        _config.prewarmCount = Mathf.Max(_config.prewarmCount, desiredPrewarmCount);
+        _config.growStep = Mathf.Max(_config.growStep, desiredGrowStep);
+        _config.allowGrow = _config.allowGrow || allowGrow;
+        _config.Sanitize();
+
+        Prewarm(Mathf.Max(0, _config.prewarmCount - _totalCount));
+    }
+
     public int ReleaseUnused()
     {
         return Trim(_config.prewarmCount);

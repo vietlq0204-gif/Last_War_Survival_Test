@@ -113,7 +113,7 @@ namespace Vit.SpawnKit.Services
 
             for (int i = 0; i < catalog.items.Count; i++)
             {
-                Register(catalog.items[i]);
+                SafeRegister(catalog.items[i]);
             }
         }
 
@@ -124,7 +124,7 @@ namespace Vit.SpawnKit.Services
 
             for (int i = 0; i < source.items.Count; i++)
             {
-                Register(source.items[i]);
+                SafeRegister(source.items[i]);
             }
         }
 
@@ -145,11 +145,21 @@ namespace Vit.SpawnKit.Services
                 var factory = CreateFactory(spawnable, i);
                 if (factory == null) continue;
 
-                string debugName = $"{spawnable.name}_v{i}";
-                pools[i] = new GameObjectPool(spawnable.key, _nextPoolId++, factory, spawnable.poolConfig, _timedDespawnScheduler, poolsRoot, debugName);
-                pools[i].Prewarm(spawnable.poolConfig.prewarmCount);
-                weights[i] = GetVariantWeight(spawnable, i);
-                hasPool = true;
+                try
+                {
+                    string debugName = $"{spawnable.name}_v{i}";
+                    var runtimeConfig = spawnable.poolConfig != null ? spawnable.poolConfig.Clone() : new PoolConfig();
+                    pools[i] = new GameObjectPool(spawnable.key, _nextPoolId++, factory, runtimeConfig, _timedDespawnScheduler, poolsRoot, debugName);
+                    pools[i].Prewarm(runtimeConfig.prewarmCount);
+                    weights[i] = GetVariantWeight(spawnable, i);
+                    hasPool = true;
+                }
+                catch (Exception ex)
+                {
+                    pools[i]?.Dispose();
+                    pools[i] = null;
+                    Debug.LogError($"SpawnManager failed to initialize pool for spawnable '{spawnable.name}' variant {i}. {ex}", spawnable);
+                }
             }
 
             if (!hasPool) return false;
@@ -167,6 +177,18 @@ namespace Vit.SpawnKit.Services
             SpawnLifecycle? lifecycle = null)
         {
             return Spawn(new SpawnRequest(spawnable, count, parent, algorithm, seed, lifecycle));
+        }
+
+        public int SpawnNonAlloc(
+            SpawnableSO spawnable,
+            int count,
+            List<GameObject> results,
+            Transform parent = null,
+            ISpawnAlgorithm algorithm = null,
+            uint seed = 0,
+            SpawnLifecycle? lifecycle = null)
+        {
+            return SpawnNonAlloc(new SpawnRequest(spawnable, count, parent, algorithm, seed, lifecycle), results);
         }
 
         public Task<SpawnHandle> SpawnAsync(
@@ -238,14 +260,22 @@ namespace Vit.SpawnKit.Services
 
         public SpawnHandle Spawn(in SpawnRequest request)
         {
-            if (!TryPrepareSpawn(request, out var prepared)) return EmptyHandle();
-
-            _resultBuffer.Clear();
-            ExecuteSpawnRange(prepared, 0, prepared.request.count, _resultBuffer);
+            SpawnNonAlloc(request, _resultBuffer);
 
             var instances = new List<GameObject>(_resultBuffer.Count);
             instances.AddRange(_resultBuffer);
             return new SpawnHandle(this, instances);
+        }
+
+        public int SpawnNonAlloc(in SpawnRequest request, List<GameObject> results)
+        {
+            if (results == null) return 0;
+
+            results.Clear();
+            if (!TryPrepareSpawn(request, out var prepared)) return 0;
+
+            ExecuteSpawnRange(prepared, 0, prepared.request.count, results);
+            return results.Count;
         }
 
         public Task<SpawnHandle> SpawnAsync(in SpawnRequest request, int maxPerFrame = 32, CancellationToken cancellationToken = default)
@@ -354,6 +384,24 @@ namespace Vit.SpawnKit.Services
             return removed;
         }
 
+        public bool EnsurePoolCapacity(SpawnableSO spawnable, int desiredMaxSize, int desiredPrewarmCount, int desiredGrowStep, bool allowGrow = true)
+        {
+            if (spawnable == null) return false;
+            if (!Register(spawnable)) return false;
+            if (!_runtimes.TryGetValue(spawnable, out var runtime)) return false;
+
+            int maxSize = Mathf.Max(1, desiredMaxSize);
+            int prewarmCount = Mathf.Clamp(desiredPrewarmCount, 0, maxSize);
+            int growStep = Mathf.Max(1, desiredGrowStep);
+
+            for (int i = 0; i < runtime.pools.Length; i++)
+            {
+                runtime.pools[i]?.EnsureCapacity(maxSize, prewarmCount, growStep, allowGrow);
+            }
+
+            return true;
+        }
+
         private readonly struct PreparedSpawn
         {
             public readonly SpawnRequest request;
@@ -380,6 +428,20 @@ namespace Vit.SpawnKit.Services
         private SpawnHandle EmptyHandle()
         {
             return new SpawnHandle(this, new List<GameObject>(0));
+        }
+
+        private void SafeRegister(SpawnableSO spawnable)
+        {
+            if (spawnable == null) return;
+
+            try
+            {
+                Register(spawnable);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"SpawnManager failed to register spawnable '{spawnable.name}'. {ex}", spawnable);
+            }
         }
 
         private bool TryPrepareSpawn(in SpawnRequest request, out PreparedSpawn prepared)

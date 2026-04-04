@@ -57,6 +57,14 @@ namespace Vit.SpawnKit.Api
                 : null;
         }
 
+        public static int SpawnNonAlloc(SpawnableSO spawnable, int count, System.Collections.Generic.List<GameObject> results, Transform parent = null, ISpawnAlgorithm algorithm = null, uint seed = 0, SpawnLifecycle? lifecycle = null)
+        {
+            var service = Service;
+            return service != null
+                ? service.SpawnNonAlloc(spawnable, count, results, parent, algorithm, seed, lifecycle)
+                : 0;
+        }
+
         /// <summary>
                 /// Spawns using a preset without collider input, typically at the parent transform or origin fallback.
                 /// </summary>
@@ -188,6 +196,12 @@ namespace Vit.SpawnKit.Api
         {
             var service = Service;
             service?.Register(spawnable);
+        }
+
+        public static bool EnsurePoolCapacity(SpawnableSO spawnable, int desiredMaxSize, int desiredPrewarmCount, int desiredGrowStep, bool allowGrow = true)
+        {
+            var service = Service;
+            return service != null && service.EnsurePoolCapacity(spawnable, desiredMaxSize, desiredPrewarmCount, desiredGrowStep, allowGrow);
         }
 
         /// <summary>

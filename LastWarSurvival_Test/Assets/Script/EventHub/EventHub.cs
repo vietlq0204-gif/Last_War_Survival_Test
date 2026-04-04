@@ -43,19 +43,17 @@ public sealed class GameStartEvent
     }
 }
 
-public sealed class CardAddQuantitySpawnedEvent
+public struct ObjectSpawnInstruction
 {
-    public CardAddQuantity Card { get; set; }
-    public PointBaker PointBaker { get; set; }
+    public ObjectSpawned SpawnedObject { get; set; }
     public float MoveSpeed { get; set; }
     public float InitialDistance { get; set; }
     public EntityId SpawnZoneId { get; set; }
 }
 
-public sealed class CardAddQuantityReachedEndEvent
+public struct ObjectReachedEndInfo
 {
-    public CardAddQuantity Card { get; set; }
-    public PointBaker PointBaker { get; set; }
+    public ObjectSpawned SpawnedObject { get; set; }
     public EntityId SpawnZoneId { get; set; }
 }
 
@@ -64,6 +62,4 @@ public static class CoreEvents
     public static string LastEventName;
 
     public static readonly EventHub<GameStartEvent> gameStart = new EventHub<GameStartEvent>();
-    public static readonly EventHub<CardAddQuantitySpawnedEvent> cardAddQuantitySpawned = new EventHub<CardAddQuantitySpawnedEvent>();
-    public static readonly EventHub<CardAddQuantityReachedEndEvent> cardAddQuantityReachedEnd = new EventHub<CardAddQuantityReachedEndEvent>();
 }

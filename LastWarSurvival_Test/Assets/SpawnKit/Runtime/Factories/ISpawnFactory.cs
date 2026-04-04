@@ -1,4 +1,6 @@
-﻿using UnityEngine;
+using System;
+using UnityEngine;
+using Object = UnityEngine.Object;
 
 namespace Vit.SpawnKit.Factories
 {
@@ -29,7 +31,21 @@ public sealed class PrefabSpawnFactory : ISpawnFactory
     public GameObject CreateInstance(Transform parent, Vector3 position, Quaternion rotation)
     {
         if (_prefab == null) return null;
-        return Object.Instantiate(_prefab, position, rotation, parent);
+
+        try
+        {
+            var instance = Object.Instantiate((Object)_prefab, position, rotation, parent);
+            if (instance is GameObject gameObject) return gameObject;
+            if (instance is Component component) return component.gameObject;
+
+            Debug.LogError($"PrefabSpawnFactory instantiated unsupported type '{instance?.GetType().Name ?? "null"}' from prefab '{_prefab.name}'.", _prefab);
+            return null;
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"PrefabSpawnFactory failed to instantiate prefab '{_prefab.name}'. {ex}", _prefab);
+            return null;
+        }
     }
 
     public void Dispose()

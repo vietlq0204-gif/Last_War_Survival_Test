@@ -21,6 +21,17 @@ public class PoolConfig
     [Tooltip("Allow the pool to grow when demand exceeds the current capacity.")]
     public bool allowGrow = true;
 
+    public PoolConfig Clone()
+    {
+        return new PoolConfig
+        {
+            prewarmCount = prewarmCount,
+            maxSize = maxSize,
+            growStep = growStep,
+            allowGrow = allowGrow
+        };
+    }
+
     public void Sanitize()
     {
         if (maxSize < 1) maxSize = 1;
