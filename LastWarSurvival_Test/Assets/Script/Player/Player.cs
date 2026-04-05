@@ -9,77 +9,117 @@ using Vit.SpawnKit.Data;
 using Vit.SpawnKit.ScriptableObjects;
 using Vit.SpawnKit.Services;
 
+/// <summary>
+/// Điều phối luồng spawn teammate cho Player bằng SpawnAsync và grid zone.
+/// Hiện tại class này vừa nghe event, vừa quản lý queue, vừa chuẩn bị pool nên vẫn còn gom nhiều trách nhiệm.
+/// </summary>
 public class Player : CoreEventBase
 {
     /// <summary>
-    /// SpawnPreset duoc dung de cau hinh cach spawn teammate cho Player.
+    /// Preset spawn teammate được dùng để xác định Spawnable, seed và lifecycle override.
+    /// Trường này chưa có fallback an toàn nếu preset đổi sang spawnable không tương thích lúc runtime.
     /// </summary>
-    [Header("Cau hinh spawn teammate")]
+    [Header("Cấu hình spawn teammate")]
+    [Tooltip("Preset dùng để spawn teammate. Cần có Spawnable hợp lệ để Player có thể tạo request SpawnAsync.")]
     [SerializeField] private SpawnPresetSO teammateSpawnPreset;
 
     /// <summary>
-    /// Parent de gom teammate sau khi spawn. Bo trong se dung chinh transform cua Player.
+    /// Parent để chứa teammate sau khi spawn.
+    /// Nếu để trống, code sẽ fallback sang transform của Player thay vì tạo root riêng.
     /// </summary>
+    [Tooltip("Parent của teammate sau khi spawn. Nếu để trống, Player sẽ dùng chính transform của mình.")]
     [SerializeField] private Transform teammateSpawnParent;
 
     /// <summary>
-    /// Zone component quy dinh collider va cau hinh grid de teammate duoc phan bo deu xung quanh Player.
+    /// Zone grid dùng để phân bố teammate xung quanh Player.
+    /// Nếu để trống, Player sẽ thử tìm trong child hierarchy; cách này tiện setup nhưng chưa tối ưu cho hierarchy sâu.
     /// </summary>
+    [Tooltip("Zone grid dùng để phân bố teammate. Nếu để trống, Player sẽ thử tìm một ColliderSurfaceGridZone trong child.")]
     [SerializeField] private ColliderSurfaceGridZone teammateSpawnGridZone;
 
     /// <summary>
-    /// So teammate toi da duoc spawn trong mot frame de tranh spike.
+    /// Số teammate tối đa được spawn trong một frame.
+    /// Giá trị này hiện đang canh chỉnh thủ công, chưa tự động tính theo cấu hình máy hay độ nặng prefab.
     /// </summary>
+    [Tooltip("Số teammate tối đa được spawn mỗi frame. Tăng giá trị này sẽ spawn nhanh hơn nhưng dễ gây spike frame.")]
     [SerializeField, Min(1)] private int maxSpawnPerFrame = 4;
 
     /// <summary>
-    /// So slot pool du phong de giam tan suat pool phai mo rong.
+    /// Số slot pool dự phòng để giảm tần suất pool phải mở rộng.
+    /// Hiện tại đây là hệ số cố định, chưa được estimate theo kích thước zone hoặc tốc độ spawn thực tế.
     /// </summary>
+    [Tooltip("Số slot pool dự phòng để giảm việc pool phải mở rộng. Giá trị này hiện phải chỉnh tay.")]
     [SerializeField, Min(0)] private int poolSizePadding = 8;
 
     /// <summary>
-    /// Neu bat, Player se prewarm pool teammate ngay tu luc Start.
+    /// Xác định có prewarm pool teammate ngay khi Start hay không.
+    /// Bật tùy chọn này giảm chi phí spawn lần đầu nhưng tăng chi phí khởi tạo scene và bộ nhớ lúc đầu.
     /// </summary>
+    [Tooltip("Nếu bật, Player sẽ prewarm pool teammate từ Start. Giảm chi phí spawn lần đầu nhưng tốn thêm bộ nhớ lúc khởi tạo.")]
     [SerializeField] private bool prewarmPoolOnStart = true;
 
     /// <summary>
-    /// Coroutine dang xu ly queue spawn teammate qua SpawnAsync.
+    /// Coroutine duy nhất được phép xử lý queue spawn teammate.
+    /// Kiểu đồng bộ bằng coroutine này dễ đọc nhưng chưa tối ưu nếu sau này cần ưu tiên nhiều queue khác nhau.
     /// </summary>
     private Coroutine _spawnTeammateRoutine;
 
     /// <summary>
-    /// Tong so teammate con cho duoc spawn tu cac event da nhan.
+    /// Tổng số teammate còn chờ được spawn từ các event đã nhận.
+    /// Biến này đang là counter đơn giản, chưa lưu metadata theo từng event spawn.
     /// </summary>
     private int _pendingTeammateSpawnCount;
 
     /// <summary>
-    /// Kich thuoc pool lon nhat da duoc chuan bi cho spawnable hien tai.
+    /// Kích thước pool lớn nhất đã được chuẩn bị cho spawnable hiện tại.
+    /// Chỉ số này chỉ dùng cho một spawnable tại một thời điểm, chưa bao quát trường hợp đổi preset liên tục.
     /// </summary>
     private int _preparedPoolSize;
 
     /// <summary>
-    /// Spawnable da duoc dung de cache thong tin pool.
+    /// Spawnable được dùng để cache thông tin pool.
+    /// Cache này đơn giản và được reset khi thay spawnable, chưa lưu lịch sử cho nhiều loại teammate.
     /// </summary>
     private SpawnableSO _preparedPoolSpawnable;
 
     /// <summary>
-    /// Chan warning thieu cau hinh bi log lap lai.
+    /// Chặn warning thiếu preset bị log lặp lại.
+    /// Các cờ warning này chỉ giảm spam log, chưa tổng hợp thành một hệ thống validate tập trung.
     /// </summary>
     private bool _hasWarnedMissingSpawnPreset;
+
+    /// <summary>
+    /// Chặn warning thiếu grid zone bị log lặp lại.
+    /// Cờ này không ghi nhớ nguyên nhân cụ thể, chỉ đánh dấu đã cảnh báo hay chưa.
+    /// </summary>
     private bool _hasWarnedMissingSpawnZone;
+
+    /// <summary>
+    /// Chặn warning thiếu SpawnManager bị log lặp lại.
+    /// Cách này đơn giản nhưng chưa biết được scene đã khởi tạo manager trễ hay thật sự thiếu.
+    /// </summary>
     private bool _hasWarnedMissingSpawnManager;
 
     /// <summary>
-    /// Token dung de huy request SpawnAsync dang cho khi Player bi disable.
+    /// Token source dùng để hủy request SpawnAsync đang chờ khi Player bị disable.
+    /// Hiện tại chỉ quản lý một token source chung cho cả queue spawn teammate.
     /// </summary>
     private CancellationTokenSource _spawnCancellationSource;
 
+    /// <summary>
+    /// Khởi tạo pool teammate sớm nếu người dùng bật prewarm.
+    /// Bước này giúp giảm chi phí lúc event spawn đến lần đầu.
+    /// </summary>
     private void Start()
     {
         if (prewarmPoolOnStart)
             PrepareTeammatePool(ResolveSafeMaxSpawnPerFrame());
     }
 
+    /// <summary>
+    /// Dừng coroutine spawn và hủy các request SpawnAsync đang chờ khi Player bị tắt.
+    /// Hiện tại queue pending sẽ bị reset về 0 thay vì được khôi phục khi Player bật lại.
+    /// </summary>
     private void OnDisable()
     {
         if (_spawnTeammateRoutine != null)
@@ -92,13 +132,18 @@ public class Player : CoreEventBase
         _pendingTeammateSpawnCount = 0;
     }
 
+    /// <summary>
+    /// Đăng ký event collision để Player có thể nhận trigger spawn teammate.
+    /// Hiện tại class phụ thuộc trực tiếp vào CoreEvents.collition thay vì interface hóa event source.
+    /// </summary>
     public override void SubscribeEvents()
     {
         CoreEvents.collition.Subscribe(HandleCollitionEvent, Binder);
     }
 
     /// <summary>
-    /// Nhan event tu CardAddQuantity va queue spawn teammate neu data card hop le.
+    /// Lọc CollitionEvent hợp lệ rồi đưa vào queue spawn teammate.
+    /// Hàm này đang kiểm tra điều kiện bằng nhiều if sớm, dễ đọc nhưng chưa gom thành rule validate tái sử dụng.
     /// </summary>
     private void HandleCollitionEvent(CollitionEvent collitionEvent)
     {
@@ -111,29 +156,35 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Cong don teammate can spawn tu data card va dam bao coroutine xu ly queue dang chay.
+    /// Cộng dồn teammate cần spawn vào queue và đảm bảo coroutine xử lý đang chạy.
+    /// Mỗi event đều có thể gọi prewarm lại pool, cách này an toàn nhưng chưa tối ưu khi event đến liên tục với tần suất cao.
     /// </summary>
     private void QueueSpawnTeammates(CardAddQuantitySO cardData)
     {
         if (cardData == null || !cardData.HasValidData) return;
         if (!CanSpawnTeammates()) return;
 
+        // Cộng dồn queue để nhiều event liên tiếp không tạo nhiều coroutine spawn song song.
         _pendingTeammateSpawnCount += cardData.TeammateSpawnCount;
 
         var gridZone = ResolveTeammateSpawnGridZone();
         int occupiedSlots = gridZone != null ? gridZone.OccupiedSlotCount : 0;
+
+        // Chuẩn bị pool theo tổng slot đã chiếm và số object đang chờ spawn.
         PrepareTeammatePool(occupiedSlots + _pendingTeammateSpawnCount);
 
         Debug.Log(
-            $"Player '{name}' nhan CollitionEvent voi data '{cardData.name}', queue spawn them {cardData.TeammateSpawnCount} teammate. Pending: {_pendingTeammateSpawnCount}.",
+            $"Player '{name}' nhận CollitionEvent với data '{cardData.name}', queue spawn thêm {cardData.TeammateSpawnCount} teammate. Pending: {_pendingTeammateSpawnCount}.",
             this);
 
+        // Chỉ cho phép một coroutine xử lý queue spawn tại một thời điểm.
         if (_spawnTeammateRoutine == null)
             _spawnTeammateRoutine = StartCoroutine(SpawnTeammatesRoutine());
     }
 
     /// <summary>
-    /// Spawn teammate bang SpawnAsync va chi lay cac slot grid con trong cua teammateSpawnZone.
+    /// Xử lý queue spawn teammate bằng SpawnAsync và grid slot stateful.
+    /// Khi zone đầy, coroutine sẽ poll mỗi frame bằng yield return null; cách này đơn giản nhưng chưa tối ưu cho queue rất dài.
     /// </summary>
     private IEnumerator SpawnTeammatesRoutine()
     {
@@ -153,6 +204,7 @@ public class Player : CoreEventBase
                 break;
             }
 
+            // Luồng chính: chỉ spawn vào các slot còn trống, nếu hết slot thì chờ frame sau.
             int availableSlotCount = gridZone.GetAvailableSlotCount();
             if (availableSlotCount <= 0)
             {
@@ -163,11 +215,13 @@ public class Player : CoreEventBase
             int requestCount = Mathf.Min(_pendingTeammateSpawnCount, availableSlotCount);
             PrepareTeammatePool(gridZone.OccupiedSlotCount + requestCount);
 
+            // SpawnAsync sẽ gọi grid algorithm theo từng object và giữ slot đã đặt để tránh spawn chồng lên nhau.
             Task<SpawnHandle> spawnTask = SpawnKit.SpawnAsync(
                 CreateTeammateSpawnRequest(requestCount, gridAlgorithm),
                 ResolveSafeMaxSpawnPerFrame(),
                 ResolveSpawnCancellationToken());
 
+            // Chờ request hoàn tất để cập nhật queue theo số object spawn thành công thực tế.
             yield return new WaitUntil(() => spawnTask.IsCompleted);
 
             if (spawnTask.IsCanceled)
@@ -185,7 +239,7 @@ public class Player : CoreEventBase
             if (spawnedCount <= 0)
             {
                 Debug.LogWarning(
-                    "Player khong spawn duoc teammate vao teammateSpawnGridZone. Kiem tra lai teammateSpawnPreset, teammateSpawnGridZone hoac pool config.",
+                    "Player không spawn được teammate vào teammateSpawnGridZone. Kiểm tra lại teammateSpawnPreset, teammateSpawnGridZone hoặc pool config.",
                     this);
                 _pendingTeammateSpawnCount = 0;
                 break;
@@ -194,7 +248,7 @@ public class Player : CoreEventBase
             _pendingTeammateSpawnCount = Mathf.Max(0, _pendingTeammateSpawnCount - spawnedCount);
 
             Debug.Log(
-                $"Player '{name}' da spawn {spawnedCount} teammate vao zone '{gridZone.name}'. Con lai trong queue: {_pendingTeammateSpawnCount}.",
+                $"Player '{name}' đã spawn {spawnedCount} teammate vào zone '{gridZone.name}'. Còn lại trong queue: {_pendingTeammateSpawnCount}.",
                 this);
         }
 
@@ -202,7 +256,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Chuan bi truoc pool teammate de giam chi phi grow khi spawn batch.
+    /// Chuẩn bị pool teammate trước khi spawn để giảm chi phí grow pool trong lúc chơi.
+    /// Công thức tính pool hiện tại là heuristic đơn giản, chưa tính đến variation prefab hay nhiều queue khác nhau.
     /// </summary>
     private void PrepareTeammatePool(int targetTotalCount)
     {
@@ -223,18 +278,19 @@ public class Player : CoreEventBase
         int growStep = safeMaxSpawnPerFrame;
 
         if (!SpawnKit.EnsurePoolCapacity(
-            teammateSpawnable,
-            desiredPoolSize,
-            prewarmCount,
-            growStep,
-            allowGrow: true))
+                teammateSpawnable,
+                desiredPoolSize,
+                prewarmCount,
+                growStep,
+                allowGrow: true))
             return;
 
         _preparedPoolSize = desiredPoolSize;
     }
 
     /// <summary>
-    /// Xac dinh Player da co du cau hinh de spawn teammate qua SpawnAsync hay chua.
+    /// Kiểm tra Player đã đủ điều kiện để spawn teammate qua SpawnAsync hay chưa.
+    /// Hàm này có thể gọi lookup manager và zone nhiều lần trong một chu kỳ spawn, chưa cache theo frame.
     /// </summary>
     private bool CanSpawnTeammates()
     {
@@ -243,7 +299,7 @@ public class Player : CoreEventBase
             if (!_hasWarnedMissingSpawnPreset)
             {
                 _hasWarnedMissingSpawnPreset = true;
-                Debug.LogWarning("Player chua duoc gan teammateSpawnPreset hop le nen khong the spawn teammate.", this);
+                Debug.LogWarning("Player chưa được gán teammateSpawnPreset hợp lệ nên không thể spawn teammate.", this);
             }
 
             return false;
@@ -256,7 +312,7 @@ public class Player : CoreEventBase
             if (!_hasWarnedMissingSpawnManager)
             {
                 _hasWarnedMissingSpawnManager = true;
-                Debug.LogWarning("Khong tim thay SpawnManager trong scene nen Player khong the SpawnAsync teammate.", this);
+                Debug.LogWarning("Không tìm thấy SpawnManager trong scene nên Player không thể SpawnAsync teammate.", this);
             }
 
             return false;
@@ -267,7 +323,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Tao SpawnRequest tu preset hien tai va grid algorithm dang giu trang thai occupied slot.
+    /// Tạo SpawnRequest từ preset hiện tại và grid algorithm đang giữ occupied slot.
+    /// Variant plan hiện được lấy trực tiếp từ Spawnable, chưa có chỗ chèn quy tắc ưu tiên variant theo game design.
     /// </summary>
     private SpawnRequest CreateTeammateSpawnRequest(int teammateCount, ColliderSurfaceGridAlgorithm gridAlgorithm)
     {
@@ -291,7 +348,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Parent mac dinh de chua teammate neu nguoi dung chua gan rieng.
+    /// Lấy parent mặc định để chứa teammate.
+    /// Hiện tại không tự tạo root riêng cho teammate, nên việc tổ chức hierarchy vẫn phụ thuộc vào setup của scene.
     /// </summary>
     private Transform ResolveTeammateSpawnParent()
     {
@@ -299,10 +357,12 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Khoi tao hoac tai su dung grid algorithm cho teammateSpawnZone.
+    /// Khởi tạo hoặc tái sử dụng grid zone cho teammate.
+    /// Nếu để Player tự tìm child zone thì cách này tiện setup nhưng chưa tối ưu khi hierarchy sâu hoặc bị thay đổi động.
     /// </summary>
     private ColliderSurfaceGridZone ResolveTeammateSpawnGridZone()
     {
+        // Tự động tìm child zone để giảm thao tác setup tay trong Inspector.
         if (teammateSpawnGridZone == null)
             teammateSpawnGridZone = GetComponentInChildren<ColliderSurfaceGridZone>();
 
@@ -311,7 +371,7 @@ public class Player : CoreEventBase
             if (!_hasWarnedMissingSpawnZone)
             {
                 _hasWarnedMissingSpawnZone = true;
-                Debug.LogWarning("Player chua duoc gan teammateSpawnGridZone hop le nen khong the phan bo teammate theo grid zone.", this);
+                Debug.LogWarning("Player chưa được gán teammateSpawnGridZone hợp lệ nên không thể phân bố teammate theo grid zone.", this);
             }
 
             return null;
@@ -328,7 +388,7 @@ public class Player : CoreEventBase
         {
             _hasWarnedMissingSpawnZone = true;
             Debug.LogWarning(
-                "teammateSpawnGridZone ton tai nhung khong resolve duoc collider/grid algorithm. Kiem tra lai zoneCollider va cau hinh grid.",
+                "teammateSpawnGridZone tồn tại nhưng không resolve được collider/grid algorithm. Kiểm tra lại zoneCollider và cấu hình grid.",
                 this);
         }
 
@@ -336,7 +396,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Lay SpawnManager runtime hien tai de xac nhan scene co service spawn.
+    /// Lấy SpawnManager runtime hiện tại.
+    /// Nếu singleton chưa sẵn sàng, hàm sẽ fallback sang FindAnyObjectByType; cách này tiện nhưng có chi phí tìm kiếm trong scene.
     /// </summary>
     private SpawnManager ResolveSpawnManager()
     {
@@ -345,7 +406,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Lay Spawnable duoc khai bao trong preset teammate hien tai.
+    /// Lấy Spawnable được khai báo trong preset teammate hiện tại.
+    /// Hàm này chỉ trả về trực tiếp tham chiếu, không có validate sâu hơn cho prefab con trong spawnable.
     /// </summary>
     private SpawnableSO ResolveTeammateSpawnable()
     {
@@ -353,7 +415,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Dam bao batch size luon hop le ngay ca khi scene/prefab bi sua sai du lieu luc runtime.
+    /// Đảm bảo batch size hợp lệ ngay cả khi dữ liệu bị sửa sai trong Inspector.
+    /// Hàm này chỉ clamp min, chưa có max recommendation theo năng lực thiết bị.
     /// </summary>
     private int ResolveSafeMaxSpawnPerFrame()
     {
@@ -361,7 +424,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Tao token moi khi can de co the huy SpawnAsync luc Player bi disable.
+    /// Tạo hoặc tái sử dụng cancellation token cho queue SpawnAsync hiện tại.
+    /// Hiện tại cả queue dùng chung một token nên chưa tách riêng từng request để debug chi tiết.
     /// </summary>
     private CancellationToken ResolveSpawnCancellationToken()
     {
@@ -374,7 +438,8 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Huy request SpawnAsync dang cho va giai phong token cu.
+    /// Hủy request SpawnAsync đang chờ và giải phóng token cũ.
+    /// Các request đã hủy hiện chỉ bị reset queue, chưa có cơ chế retry tự động.
     /// </summary>
     private void CancelSpawnRequests()
     {
