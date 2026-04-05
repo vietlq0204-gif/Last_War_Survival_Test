@@ -11,6 +11,23 @@ public interface ISpawnAlgorithm
 }
 
 /// <summary>
+/// Optional spawn algorithm contract that can reject a spawn index when no valid pose is available.
+/// </summary>
+public interface ITrySpawnAlgorithm : ISpawnAlgorithm
+{
+    bool TryGetPose(int index, uint seed, out Vector3 position, out Quaternion rotation);
+}
+
+/// <summary>
+/// Optional callbacks fired by the spawn pipeline after each spawn attempt.
+/// </summary>
+public interface ISpawnResultCallback
+{
+    void OnSpawnSucceeded(int index, GameObject instance);
+    void OnSpawnFailed(int index);
+}
+
+/// <summary>
 /// Simple circular placement around an origin.
 /// </summary>
 public sealed class SimplePointAlgorithm : ISpawnAlgorithm

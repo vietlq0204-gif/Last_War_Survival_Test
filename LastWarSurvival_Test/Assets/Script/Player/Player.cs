@@ -1,5 +1,6 @@
 using System.Collections;
-using System.Collections.Generic;
+using System.Threading;
+using System.Threading.Tasks;
 using UnityEngine;
 using Vit.SpawnKit.Algorithms;
 using Vit.SpawnKit.Api;
@@ -21,6 +22,41 @@ public class Player : CoreEventBase
     [SerializeField] private Transform teammateSpawnParent;
 
     /// <summary>
+    /// Collider zone quy dinh mat phang grid de teammate duoc phan bo deu xung quanh Player.
+    /// </summary>
+    [SerializeField] private Collider teammateSpawnZone;
+
+    /// <summary>
+    /// Khoang cach giua cac o grid trong spawn zone.
+    /// </summary>
+    [SerializeField, Min(0.01f)] private float teammateGridCellSize = 0.8f;
+
+    /// <summary>
+    /// Le trong de khong spawn sat mep collider zone.
+    /// </summary>
+    [SerializeField, Min(0f)] private float teammateGridEdgePadding = 0.05f;
+
+    /// <summary>
+    /// Mat phang tham chieu cua grid ben trong collider zone.
+    /// </summary>
+    [SerializeField] private ColliderGridPlaneAnchor teammateGridAnchor = ColliderGridPlaneAnchor.Bottom;
+
+    /// <summary>
+    /// Offset theo truc up cua zone de can chinh pivot teammate.
+    /// </summary>
+    [SerializeField] private float teammateGridVerticalOffset = 0f;
+
+    /// <summary>
+    /// Neu bat, grid se xoay theo truc local cua collider thay vi truc world.
+    /// </summary>
+    [SerializeField] private bool useColliderAxesForTeammateGrid = true;
+
+    /// <summary>
+    /// Neu bat, teammate se quay theo huong cua grid zone.
+    /// </summary>
+    [SerializeField] private bool alignTeammateRotationToGrid = true;
+
+    /// <summary>
     /// So teammate toi da duoc spawn trong mot frame de tranh spike.
     /// </summary>
     [SerializeField, Min(1)] private int maxSpawnPerFrame = 4;
@@ -36,17 +72,7 @@ public class Player : CoreEventBase
     [SerializeField] private bool prewarmPoolOnStart = true;
 
     /// <summary>
-    /// Buffer tai su dung de nhan ket qua SpawnNonAlloc, tranh tao List moi moi batch.
-    /// </summary>
-    private readonly List<GameObject> _spawnResultsBuffer = new List<GameObject>(32);
-
-    /// <summary>
-    /// Thuat toan pose don gian de spawn teammate ngay tai vi tri hien tai cua Player.
-    /// </summary>
-    private readonly TeammateSpawnPoseAlgorithm _spawnPoseAlgorithm = new TeammateSpawnPoseAlgorithm();
-
-    /// <summary>
-    /// Coroutine dang xu ly queue spawn teammate nhieu frame.
+    /// Coroutine dang xu ly queue spawn teammate qua SpawnAsync.
     /// </summary>
     private Coroutine _spawnTeammateRoutine;
 
@@ -54,11 +80,6 @@ public class Player : CoreEventBase
     /// Tong so teammate con cho duoc spawn tu cac event da nhan.
     /// </summary>
     private int _pendingTeammateSpawnCount;
-
-    /// <summary>
-    /// Tong so teammate da spawn thanh cong trong runtime hien tai.
-    /// </summary>
-    private int _spawnedTeammateCount;
 
     /// <summary>
     /// Kich thuoc pool lon nhat da duoc chuan bi cho spawnable hien tai.
@@ -71,9 +92,21 @@ public class Player : CoreEventBase
     private SpawnableSO _preparedPoolSpawnable;
 
     /// <summary>
-    /// Chan warning thieu preset hoac spawnable bi log lap lai.
+    /// Chan warning thieu cau hinh bi log lap lai.
     /// </summary>
     private bool _hasWarnedMissingSpawnPreset;
+    private bool _hasWarnedMissingSpawnZone;
+    private bool _hasWarnedMissingSpawnManager;
+
+    /// <summary>
+    /// Grid algorithm duoc giu lai giua nhieu request de slot occupied khong bi trung.
+    /// </summary>
+    private ColliderSurfaceGridAlgorithm _teammateGridAlgorithm;
+
+    /// <summary>
+    /// Token dung de huy request SpawnAsync dang cho khi Player bi disable.
+    /// </summary>
+    private CancellationTokenSource _spawnCancellationSource;
 
     private void Start()
     {
@@ -89,8 +122,8 @@ public class Player : CoreEventBase
             _spawnTeammateRoutine = null;
         }
 
+        CancelSpawnRequests();
         _pendingTeammateSpawnCount = 0;
-        _spawnResultsBuffer.Clear();
     }
 
     public override void SubscribeEvents()
@@ -120,7 +153,10 @@ public class Player : CoreEventBase
         if (!CanSpawnTeammates()) return;
 
         _pendingTeammateSpawnCount += cardData.TeammateSpawnCount;
-        PrepareTeammatePool(_spawnedTeammateCount + _pendingTeammateSpawnCount);
+
+        var gridAlgorithm = ResolveTeammateSpawnAlgorithm();
+        int occupiedSlots = gridAlgorithm != null ? gridAlgorithm.OccupiedSlotCount : 0;
+        PrepareTeammatePool(occupiedSlots + _pendingTeammateSpawnCount);
 
         Debug.Log(
             $"Player '{name}' nhan CollitionEvent voi data '{cardData.name}', queue spawn them {cardData.TeammateSpawnCount} teammate. Pending: {_pendingTeammateSpawnCount}.",
@@ -131,31 +167,68 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Spawn teammate theo batch qua nhieu frame de tranh spike.
+    /// Spawn teammate bang SpawnAsync va chi lay cac slot grid con trong cua teammateSpawnZone.
     /// </summary>
     private IEnumerator SpawnTeammatesRoutine()
     {
         while (_pendingTeammateSpawnCount > 0)
         {
-            int batchCount = Mathf.Min(ResolveSafeMaxSpawnPerFrame(), _pendingTeammateSpawnCount);
-            int spawnedCount = SpawnTeammateBatch(batchCount);
+            if (!CanSpawnTeammates())
+            {
+                _pendingTeammateSpawnCount = 0;
+                break;
+            }
 
+            var gridAlgorithm = ResolveTeammateSpawnAlgorithm();
+            if (gridAlgorithm == null)
+            {
+                _pendingTeammateSpawnCount = 0;
+                break;
+            }
+
+            int availableSlotCount = gridAlgorithm.GetAvailableSlotCount();
+            if (availableSlotCount <= 0)
+            {
+                yield return null;
+                continue;
+            }
+
+            int requestCount = Mathf.Min(_pendingTeammateSpawnCount, availableSlotCount);
+            PrepareTeammatePool(gridAlgorithm.OccupiedSlotCount + requestCount);
+
+            Task<SpawnHandle> spawnTask = SpawnKit.SpawnAsync(
+                CreateTeammateSpawnRequest(requestCount, gridAlgorithm),
+                ResolveSafeMaxSpawnPerFrame(),
+                ResolveSpawnCancellationToken());
+
+            yield return new WaitUntil(() => spawnTask.IsCompleted);
+
+            if (spawnTask.IsCanceled)
+                break;
+
+            if (spawnTask.IsFaulted)
+            {
+                Debug.LogException(spawnTask.Exception?.GetBaseException() ?? spawnTask.Exception, this);
+                _pendingTeammateSpawnCount = 0;
+                break;
+            }
+
+            var handle = spawnTask.Result;
+            int spawnedCount = handle != null ? handle.Instances.Count : 0;
             if (spawnedCount <= 0)
             {
-                Debug.LogWarning("Player khong spawn duoc teammate. Kiem tra lai teammateSpawnPreset hoac pool config.", this);
+                Debug.LogWarning(
+                    "Player khong spawn duoc teammate vao teammateSpawnZone. Kiem tra lai teammateSpawnPreset, teammateSpawnZone hoac pool config.",
+                    this);
                 _pendingTeammateSpawnCount = 0;
                 break;
             }
 
             _pendingTeammateSpawnCount = Mathf.Max(0, _pendingTeammateSpawnCount - spawnedCount);
-            _spawnedTeammateCount += spawnedCount;
 
             Debug.Log(
-                $"Player '{name}' da spawn {spawnedCount} teammate tu preset '{teammateSpawnPreset.name}'. Con lai trong queue: {_pendingTeammateSpawnCount}.",
+                $"Player '{name}' da spawn {spawnedCount} teammate vao zone '{teammateSpawnZone.name}'. Con lai trong queue: {_pendingTeammateSpawnCount}.",
                 this);
-
-            if (_pendingTeammateSpawnCount > 0)
-                yield return null;
         }
 
         _spawnTeammateRoutine = null;
@@ -194,25 +267,43 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Xac dinh Player da co cau hinh preset va spawnable can thiet de spawn teammate hay chua.
+    /// Xac dinh Player da co du cau hinh de spawn teammate qua SpawnAsync hay chua.
     /// </summary>
     private bool CanSpawnTeammates()
     {
-        if (teammateSpawnPreset != null && teammateSpawnPreset.spawnable != null) return true;
-        if (_hasWarnedMissingSpawnPreset) return false;
+        if (teammateSpawnPreset == null || teammateSpawnPreset.spawnable == null)
+        {
+            if (!_hasWarnedMissingSpawnPreset)
+            {
+                _hasWarnedMissingSpawnPreset = true;
+                Debug.LogWarning("Player chua duoc gan teammateSpawnPreset hop le nen khong the spawn teammate.", this);
+            }
 
-        _hasWarnedMissingSpawnPreset = true;
-        Debug.LogWarning("Player chua duoc gan teammateSpawnPreset hop le nen khong the spawn teammate.", this);
-        return false;
+            return false;
+        }
+
+        _hasWarnedMissingSpawnPreset = false;
+
+        if (ResolveSpawnManager() == null)
+        {
+            if (!_hasWarnedMissingSpawnManager)
+            {
+                _hasWarnedMissingSpawnManager = true;
+                Debug.LogWarning("Khong tim thay SpawnManager trong scene nen Player khong the SpawnAsync teammate.", this);
+            }
+
+            return false;
+        }
+
+        _hasWarnedMissingSpawnManager = false;
+        return ResolveTeammateSpawnAlgorithm() != null;
     }
 
     /// <summary>
-    /// Tao SpawnRequest tu preset hien tai nhung ghi de count bang so teammate can spawn trong batch.
+    /// Tao SpawnRequest tu preset hien tai va grid algorithm dang giu trang thai occupied slot.
     /// </summary>
-    private SpawnRequest CreateTeammateSpawnRequest(int teammateCount)
+    private SpawnRequest CreateTeammateSpawnRequest(int teammateCount, ColliderSurfaceGridAlgorithm gridAlgorithm)
     {
-        _spawnPoseAlgorithm.SetPose(transform.position, transform.rotation);
-
         SpawnLifecycle? lifecycle = teammateSpawnPreset != null && teammateSpawnPreset.overrideLifecycle
             ? teammateSpawnPreset.lifecycle
             : (SpawnLifecycle?)null;
@@ -226,22 +317,10 @@ public class Player : CoreEventBase
             teammateSpawnable,
             teammateCount,
             ResolveTeammateSpawnParent(),
-            _spawnPoseAlgorithm,
+            gridAlgorithm,
             teammateSpawnPreset != null ? teammateSpawnPreset.seed : 0,
             lifecycle,
             variantPlan);
-    }
-
-    /// <summary>
-    /// Spawn mot batch teammate thong qua SpawnRequest duoc tao tu SpawnPresetSO.
-    /// </summary>
-    private int SpawnTeammateBatch(int batchCount)
-    {
-        var spawnManager = ResolveSpawnManager();
-        if (spawnManager == null) return 0;
-
-        _spawnResultsBuffer.Clear();
-        return spawnManager.SpawnNonAlloc(CreateTeammateSpawnRequest(batchCount), _spawnResultsBuffer);
     }
 
     /// <summary>
@@ -253,7 +332,47 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Lay SpawnManager runtime hien tai de gui SpawnRequest khong alloc.
+    /// Khoi tao hoac tai su dung grid algorithm cho teammateSpawnZone.
+    /// </summary>
+    private ColliderSurfaceGridAlgorithm ResolveTeammateSpawnAlgorithm()
+    {
+        if (teammateSpawnZone == null)
+        {
+            if (!_hasWarnedMissingSpawnZone)
+            {
+                _hasWarnedMissingSpawnZone = true;
+                Debug.LogWarning("Player chua duoc gan teammateSpawnZone hop le nen khong the phan bo teammate theo grid zone.", this);
+            }
+
+            return null;
+        }
+
+        _hasWarnedMissingSpawnZone = false;
+
+        if (_teammateGridAlgorithm != null && _teammateGridAlgorithm.Matches(
+                teammateSpawnZone,
+                teammateGridCellSize,
+                teammateGridEdgePadding,
+                teammateGridVerticalOffset,
+                teammateGridAnchor,
+                useColliderAxesForTeammateGrid,
+                alignTeammateRotationToGrid))
+            return _teammateGridAlgorithm;
+
+        _teammateGridAlgorithm = new ColliderSurfaceGridAlgorithm(
+            teammateSpawnZone,
+            teammateGridCellSize,
+            teammateGridEdgePadding,
+            teammateGridVerticalOffset,
+            teammateGridAnchor,
+            useColliderAxesForTeammateGrid,
+            alignTeammateRotationToGrid);
+
+        return _teammateGridAlgorithm;
+    }
+
+    /// <summary>
+    /// Lay SpawnManager runtime hien tai de xac nhan scene co service spawn.
     /// </summary>
     private SpawnManager ResolveSpawnManager()
     {
@@ -278,23 +397,29 @@ public class Player : CoreEventBase
     }
 
     /// <summary>
-    /// Thuat toan pose toi gian de tai su dung cung mot diem spawn tai vi tri hien tai cua Player.
+    /// Tao token moi khi can de co the huy SpawnAsync luc Player bi disable.
     /// </summary>
-    private sealed class TeammateSpawnPoseAlgorithm : ISpawnAlgorithm
+    private CancellationToken ResolveSpawnCancellationToken()
     {
-        private Vector3 _position;
-        private Quaternion _rotation = Quaternion.identity;
+        if (_spawnCancellationSource != null && !_spawnCancellationSource.IsCancellationRequested)
+            return _spawnCancellationSource.Token;
 
-        public void SetPose(Vector3 position, Quaternion rotation)
-        {
-            _position = position;
-            _rotation = rotation;
-        }
+        _spawnCancellationSource?.Dispose();
+        _spawnCancellationSource = new CancellationTokenSource();
+        return _spawnCancellationSource.Token;
+    }
 
-        public void GetPose(int index, uint seed, out Vector3 position, out Quaternion rotation)
-        {
-            position = _position;
-            rotation = _rotation;
-        }
+    /// <summary>
+    /// Huy request SpawnAsync dang cho va giai phong token cu.
+    /// </summary>
+    private void CancelSpawnRequests()
+    {
+        if (_spawnCancellationSource == null) return;
+
+        if (!_spawnCancellationSource.IsCancellationRequested)
+            _spawnCancellationSource.Cancel();
+
+        _spawnCancellationSource.Dispose();
+        _spawnCancellationSource = null;
     }
 }

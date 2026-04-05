@@ -470,19 +470,48 @@ namespace Vit.SpawnKit.Services
 
         private void ExecuteSpawnRange(in PreparedSpawn prepared, int startIndex, int endExclusive, List<GameObject> results)
         {
+            var resultCallback = prepared.algorithm as ISpawnResultCallback;
+
             for (int i = startIndex; i < endExclusive; i++)
             {
                 int variantIndex = ResolveVariantIndex(prepared.runtime, prepared.request.variantPlan, prepared.effectiveSeed, i);
-                if (variantIndex < 0 || variantIndex >= prepared.runtime.pools.Length) continue;
+                if (variantIndex < 0 || variantIndex >= prepared.runtime.pools.Length)
+                {
+                    resultCallback?.OnSpawnFailed(i);
+                    continue;
+                }
 
                 var pool = prepared.runtime.pools[variantIndex];
-                if (pool == null || !pool.IsReady) continue;
+                if (pool == null || !pool.IsReady)
+                {
+                    resultCallback?.OnSpawnFailed(i);
+                    continue;
+                }
 
-                prepared.algorithm.GetPose(i, prepared.effectiveSeed, out var position, out var rotation);
+                Vector3 position;
+                Quaternion rotation;
+                if (prepared.algorithm is ITrySpawnAlgorithm tryAlgorithm)
+                {
+                    if (!tryAlgorithm.TryGetPose(i, prepared.effectiveSeed, out position, out rotation))
+                    {
+                        resultCallback?.OnSpawnFailed(i);
+                        continue;
+                    }
+                }
+                else
+                {
+                    prepared.algorithm.GetPose(i, prepared.effectiveSeed, out position, out rotation);
+                }
+
                 var go = pool.Rent(prepared.request.parent, position, rotation, prepared.lifecycle);
                 if (go != null)
                 {
                     results.Add(go);
+                    resultCallback?.OnSpawnSucceeded(i, go);
+                }
+                else
+                {
+                    resultCallback?.OnSpawnFailed(i);
                 }
             }
         }

@@ -172,6 +172,17 @@ namespace Vit.SpawnKit.Api
                 ? service.SpawnAsync(source, maxPerFrame, cancellationToken)
                 : Task.FromResult<SpawnHandle>(null);
         }
+
+        /// <summary>
+        /// Spawns asynchronously from a fully constructed <see cref="SpawnRequest"/>.
+        /// </summary>
+        public static Task<SpawnHandle> SpawnAsync(in SpawnRequest request, int maxPerFrame = 32, CancellationToken cancellationToken = default)
+        {
+            var service = Service;
+            return service != null
+                ? service.SpawnAsync(request, maxPerFrame, cancellationToken)
+                : Task.FromResult<SpawnHandle>(null);
+        }
         
         #endregion
         
