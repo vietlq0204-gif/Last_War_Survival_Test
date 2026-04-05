@@ -209,14 +209,14 @@ public sealed class FormationSpawnToGridAlgorithm : ITrySpawnAlgorithm, ISpawnBa
         }
 
         if (_slotAlgorithm == null)
-            return false;
+            return true;
 
         if (!_slotAlgorithm.TryGetRandomAvailablePlacement(
                 seed,
                 (uint)(index + 1),
                 _randomStartExcludedKeys,
                 out randomPlacement))
-            return false;
+            return true;
 
         _randomStartPlacements[index] = randomPlacement;
         _randomStartExcludedKeys.Add(randomPlacement.Key);
@@ -242,13 +242,13 @@ public sealed class FormationSpawnToGridAlgorithm : ITrySpawnAlgorithm, ISpawnBa
         }
 
         if (_slotAlgorithm == null)
-            return false;
+            return true;
 
         if (!_slotAlgorithm.TryGetNearestAvailablePlacement(
                 targetPlacement.Position,
                 _randomStartExcludedKeys,
                 out nearestPlacement))
-            return false;
+            return true;
 
         _randomStartPlacements[index] = nearestPlacement;
         _randomStartExcludedKeys.Add(nearestPlacement.Key);

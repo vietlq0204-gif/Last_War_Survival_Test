@@ -351,7 +351,7 @@ public class Player : CoreEventBase
         {
             case FormationSpawnInitialPoseMode.RandomEmptySlot:
             case FormationSpawnInitialPoseMode.NearestEmptySlot:
-                return availableSlotCount / 2;
+                return (availableSlotCount + 1) / 2;
 
             case FormationSpawnInitialPoseMode.CenterSlot:
             case FormationSpawnInitialPoseMode.OwnSlot:
