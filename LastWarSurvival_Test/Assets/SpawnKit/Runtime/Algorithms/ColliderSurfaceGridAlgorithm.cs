@@ -86,6 +86,27 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         return available;
     }
 
+    public void GetPreviewCells(List<ColliderSurfaceGridCellPreview> results)
+    {
+        if (results == null) return;
+
+        results.Clear();
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        for (int i = 0; i < _candidateCells.Count; i++)
+        {
+            var cell = _candidateCells[i];
+            results.Add(new ColliderSurfaceGridCellPreview(
+                cell.Key,
+                cell.X,
+                cell.Z,
+                cell.Position,
+                cell.Rotation,
+                _occupiedSlots.Contains(cell.Key)));
+        }
+    }
+
     public void ResetPlaced()
     {
         _requestPlacements.Clear();
@@ -423,6 +444,32 @@ public enum ColliderGridPlaneAnchor
     Top = 2,
 }
 
+public readonly struct ColliderSurfaceGridCellPreview
+{
+    public readonly long Key;
+    public readonly int X;
+    public readonly int Z;
+    public readonly Vector3 Position;
+    public readonly Quaternion Rotation;
+    public readonly bool IsOccupied;
+
+    public ColliderSurfaceGridCellPreview(
+        long key,
+        int x,
+        int z,
+        Vector3 position,
+        Quaternion rotation,
+        bool isOccupied)
+    {
+        Key = key;
+        X = x;
+        Z = z;
+        Position = position;
+        Rotation = rotation;
+        IsOccupied = isOccupied;
+    }
+}
+
 public interface IGridSlotReservationOwner
 {
     void ReleaseReservedSlot(long slotKey, SpawnGridSlotReservation reservation);
@@ -447,7 +494,7 @@ public sealed class SpawnGridSlotReservation : MonoBehaviour, ISpawnPoolCallback
 
     public bool IsBoundTo(IGridSlotReservationOwner owner, long slotKey)
     {
-        return _isBound && _owner == owner && _slotKey == slotKey && gameObject.activeInHierarchy;
+        return _isBound && _owner == owner && _slotKey == slotKey;
     }
 
     public void OnSpawnedFromPool()

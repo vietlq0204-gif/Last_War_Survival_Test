@@ -4,6 +4,7 @@ using System.Threading.Tasks;
 using UnityEngine;
 using Vit.SpawnKit.Algorithms;
 using Vit.SpawnKit.Api;
+using Vit.SpawnKit.Components;
 using Vit.SpawnKit.Data;
 using Vit.SpawnKit.ScriptableObjects;
 using Vit.SpawnKit.Services;
@@ -22,39 +23,9 @@ public class Player : CoreEventBase
     [SerializeField] private Transform teammateSpawnParent;
 
     /// <summary>
-    /// Collider zone quy dinh mat phang grid de teammate duoc phan bo deu xung quanh Player.
+    /// Zone component quy dinh collider va cau hinh grid de teammate duoc phan bo deu xung quanh Player.
     /// </summary>
-    [SerializeField] private Collider teammateSpawnZone;
-
-    /// <summary>
-    /// Khoang cach giua cac o grid trong spawn zone.
-    /// </summary>
-    [SerializeField, Min(0.01f)] private float teammateGridCellSize = 0.8f;
-
-    /// <summary>
-    /// Le trong de khong spawn sat mep collider zone.
-    /// </summary>
-    [SerializeField, Min(0f)] private float teammateGridEdgePadding = 0.05f;
-
-    /// <summary>
-    /// Mat phang tham chieu cua grid ben trong collider zone.
-    /// </summary>
-    [SerializeField] private ColliderGridPlaneAnchor teammateGridAnchor = ColliderGridPlaneAnchor.Bottom;
-
-    /// <summary>
-    /// Offset theo truc up cua zone de can chinh pivot teammate.
-    /// </summary>
-    [SerializeField] private float teammateGridVerticalOffset = 0f;
-
-    /// <summary>
-    /// Neu bat, grid se xoay theo truc local cua collider thay vi truc world.
-    /// </summary>
-    [SerializeField] private bool useColliderAxesForTeammateGrid = true;
-
-    /// <summary>
-    /// Neu bat, teammate se quay theo huong cua grid zone.
-    /// </summary>
-    [SerializeField] private bool alignTeammateRotationToGrid = true;
+    [SerializeField] private ColliderSurfaceGridZone teammateSpawnGridZone;
 
     /// <summary>
     /// So teammate toi da duoc spawn trong mot frame de tranh spike.
@@ -97,11 +68,6 @@ public class Player : CoreEventBase
     private bool _hasWarnedMissingSpawnPreset;
     private bool _hasWarnedMissingSpawnZone;
     private bool _hasWarnedMissingSpawnManager;
-
-    /// <summary>
-    /// Grid algorithm duoc giu lai giua nhieu request de slot occupied khong bi trung.
-    /// </summary>
-    private ColliderSurfaceGridAlgorithm _teammateGridAlgorithm;
 
     /// <summary>
     /// Token dung de huy request SpawnAsync dang cho khi Player bi disable.
@@ -154,8 +120,8 @@ public class Player : CoreEventBase
 
         _pendingTeammateSpawnCount += cardData.TeammateSpawnCount;
 
-        var gridAlgorithm = ResolveTeammateSpawnAlgorithm();
-        int occupiedSlots = gridAlgorithm != null ? gridAlgorithm.OccupiedSlotCount : 0;
+        var gridZone = ResolveTeammateSpawnGridZone();
+        int occupiedSlots = gridZone != null ? gridZone.OccupiedSlotCount : 0;
         PrepareTeammatePool(occupiedSlots + _pendingTeammateSpawnCount);
 
         Debug.Log(
@@ -179,14 +145,15 @@ public class Player : CoreEventBase
                 break;
             }
 
-            var gridAlgorithm = ResolveTeammateSpawnAlgorithm();
-            if (gridAlgorithm == null)
+            var gridZone = ResolveTeammateSpawnGridZone();
+            var gridAlgorithm = gridZone != null ? gridZone.ResolveAlgorithm() : null;
+            if (gridZone == null || gridAlgorithm == null)
             {
                 _pendingTeammateSpawnCount = 0;
                 break;
             }
 
-            int availableSlotCount = gridAlgorithm.GetAvailableSlotCount();
+            int availableSlotCount = gridZone.GetAvailableSlotCount();
             if (availableSlotCount <= 0)
             {
                 yield return null;
@@ -194,7 +161,7 @@ public class Player : CoreEventBase
             }
 
             int requestCount = Mathf.Min(_pendingTeammateSpawnCount, availableSlotCount);
-            PrepareTeammatePool(gridAlgorithm.OccupiedSlotCount + requestCount);
+            PrepareTeammatePool(gridZone.OccupiedSlotCount + requestCount);
 
             Task<SpawnHandle> spawnTask = SpawnKit.SpawnAsync(
                 CreateTeammateSpawnRequest(requestCount, gridAlgorithm),
@@ -218,7 +185,7 @@ public class Player : CoreEventBase
             if (spawnedCount <= 0)
             {
                 Debug.LogWarning(
-                    "Player khong spawn duoc teammate vao teammateSpawnZone. Kiem tra lai teammateSpawnPreset, teammateSpawnZone hoac pool config.",
+                    "Player khong spawn duoc teammate vao teammateSpawnGridZone. Kiem tra lai teammateSpawnPreset, teammateSpawnGridZone hoac pool config.",
                     this);
                 _pendingTeammateSpawnCount = 0;
                 break;
@@ -227,7 +194,7 @@ public class Player : CoreEventBase
             _pendingTeammateSpawnCount = Mathf.Max(0, _pendingTeammateSpawnCount - spawnedCount);
 
             Debug.Log(
-                $"Player '{name}' da spawn {spawnedCount} teammate vao zone '{teammateSpawnZone.name}'. Con lai trong queue: {_pendingTeammateSpawnCount}.",
+                $"Player '{name}' da spawn {spawnedCount} teammate vao zone '{gridZone.name}'. Con lai trong queue: {_pendingTeammateSpawnCount}.",
                 this);
         }
 
@@ -296,7 +263,7 @@ public class Player : CoreEventBase
         }
 
         _hasWarnedMissingSpawnManager = false;
-        return ResolveTeammateSpawnAlgorithm() != null;
+        return ResolveTeammateSpawnGridZone() != null;
     }
 
     /// <summary>
@@ -334,41 +301,38 @@ public class Player : CoreEventBase
     /// <summary>
     /// Khoi tao hoac tai su dung grid algorithm cho teammateSpawnZone.
     /// </summary>
-    private ColliderSurfaceGridAlgorithm ResolveTeammateSpawnAlgorithm()
+    private ColliderSurfaceGridZone ResolveTeammateSpawnGridZone()
     {
-        if (teammateSpawnZone == null)
+        if (teammateSpawnGridZone == null)
+            teammateSpawnGridZone = GetComponentInChildren<ColliderSurfaceGridZone>();
+
+        if (teammateSpawnGridZone == null)
         {
             if (!_hasWarnedMissingSpawnZone)
             {
                 _hasWarnedMissingSpawnZone = true;
-                Debug.LogWarning("Player chua duoc gan teammateSpawnZone hop le nen khong the phan bo teammate theo grid zone.", this);
+                Debug.LogWarning("Player chua duoc gan teammateSpawnGridZone hop le nen khong the phan bo teammate theo grid zone.", this);
             }
 
             return null;
         }
 
-        _hasWarnedMissingSpawnZone = false;
+        var algorithm = teammateSpawnGridZone.ResolveAlgorithm();
+        if (algorithm != null)
+        {
+            _hasWarnedMissingSpawnZone = false;
+            return teammateSpawnGridZone;
+        }
 
-        if (_teammateGridAlgorithm != null && _teammateGridAlgorithm.Matches(
-                teammateSpawnZone,
-                teammateGridCellSize,
-                teammateGridEdgePadding,
-                teammateGridVerticalOffset,
-                teammateGridAnchor,
-                useColliderAxesForTeammateGrid,
-                alignTeammateRotationToGrid))
-            return _teammateGridAlgorithm;
+        if (!_hasWarnedMissingSpawnZone)
+        {
+            _hasWarnedMissingSpawnZone = true;
+            Debug.LogWarning(
+                "teammateSpawnGridZone ton tai nhung khong resolve duoc collider/grid algorithm. Kiem tra lai zoneCollider va cau hinh grid.",
+                this);
+        }
 
-        _teammateGridAlgorithm = new ColliderSurfaceGridAlgorithm(
-            teammateSpawnZone,
-            teammateGridCellSize,
-            teammateGridEdgePadding,
-            teammateGridVerticalOffset,
-            teammateGridAnchor,
-            useColliderAxesForTeammateGrid,
-            alignTeammateRotationToGrid);
-
-        return _teammateGridAlgorithm;
+        return null;
     }
 
     /// <summary>
