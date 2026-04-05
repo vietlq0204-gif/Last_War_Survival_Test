@@ -17,6 +17,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
     private readonly float _edgePadding;
     private readonly float _verticalOffset;
     private readonly ColliderGridPlaneAnchor _anchor;
+    private readonly bool _includeCenterSlot;
     private readonly bool _useColliderAxes;
     private readonly bool _alignRotationToZone;
 
@@ -32,6 +33,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         float edgePadding = 0f,
         float verticalOffset = 0f,
         ColliderGridPlaneAnchor anchor = ColliderGridPlaneAnchor.Bottom,
+        bool includeCenterSlot = true,
         bool useColliderAxes = true,
         bool alignRotationToZone = true)
     {
@@ -40,6 +42,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         _edgePadding = Mathf.Max(0f, edgePadding);
         _verticalOffset = verticalOffset;
         _anchor = anchor;
+        _includeCenterSlot = includeCenterSlot;
         _useColliderAxes = useColliderAxes;
         _alignRotationToZone = alignRotationToZone;
     }
@@ -59,6 +62,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         float edgePadding,
         float verticalOffset,
         ColliderGridPlaneAnchor anchor,
+        bool includeCenterSlot,
         bool useColliderAxes,
         bool alignRotationToZone)
     {
@@ -67,6 +71,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
                && Mathf.Approximately(_edgePadding, Mathf.Max(0f, edgePadding))
                && Mathf.Approximately(_verticalOffset, verticalOffset)
                && _anchor == anchor
+               && _includeCenterSlot == includeCenterSlot
                && _useColliderAxes == useColliderAxes
                && _alignRotationToZone == alignRotationToZone;
     }
@@ -216,6 +221,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         {
             for (int x = -maxX; x <= maxX; x++)
             {
+                if (!_includeCenterSlot && x == 0 && z == 0) continue;
                 if (!TryCreateCandidate(frame, x, z, out var candidate)) continue;
                 _candidateCells.Add(candidate);
             }

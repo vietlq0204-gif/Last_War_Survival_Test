@@ -13,11 +13,13 @@ namespace Vit.SpawnKit.Components
 public sealed class ColliderSurfaceGridZone : MonoBehaviour
 {
     [Header("Zone")]
+    [Tooltip("Something...")]
     [SerializeField] private Collider zoneCollider;
     [SerializeField, Min(0.1f)] private float cellSize = 0.5f;
     [SerializeField, Min(0f)] private float edgePadding = 0.05f;
     [SerializeField] private ColliderGridPlaneAnchor anchor = ColliderGridPlaneAnchor.Center;
     [SerializeField] private float verticalOffset = 0f;
+    [SerializeField] private bool includeCenterSlot = false;
     [SerializeField] private bool useColliderAxes = true;
     [SerializeField] private bool alignRotationToZone = true;
 
@@ -54,6 +56,7 @@ public sealed class ColliderSurfaceGridZone : MonoBehaviour
                 edgePadding,
                 verticalOffset,
                 anchor,
+                includeCenterSlot,
                 useColliderAxes,
                 alignRotationToZone))
             return _algorithm;
@@ -64,6 +67,7 @@ public sealed class ColliderSurfaceGridZone : MonoBehaviour
             edgePadding,
             verticalOffset,
             anchor,
+            includeCenterSlot,
             useColliderAxes,
             alignRotationToZone);
         return _algorithm;
