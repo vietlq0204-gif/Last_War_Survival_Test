@@ -10,6 +10,7 @@ public class ObjectSpawned : MonoBehaviour, ISpawnPoolCallbacks
     private Rigidbody _cachedRigidbody;
     private Collider[] _cachedColliders;
     private bool[] _defaultColliderStates;
+    private ObjectOnPathController _owningPathController;
 
     public EntityId CachedEntityId => _cachedEntityId;
     public Transform CachedTransform => _cachedTransform;
@@ -33,6 +34,32 @@ public class ObjectSpawned : MonoBehaviour, ISpawnPoolCallbacks
     {
         ResetPhysicsState();
         RestoreDefaultColliderStates();
+        ClearPathControllerOwner(null);
+    }
+
+    /// <summary>
+    /// Gan controller dang quan ly object tren path de co the yeu cau release som khi can.
+    /// </summary>
+    public void SetPathControllerOwner(ObjectOnPathController owner)
+    {
+        _owningPathController = owner;
+    }
+
+    /// <summary>
+    /// Xoa tham chieu controller khi object khong con nam tren path runtime.
+    /// </summary>
+    public void ClearPathControllerOwner(ObjectOnPathController owner)
+    {
+        if (owner != null && _owningPathController != owner) return;
+        _owningPathController = null;
+    }
+
+    /// <summary>
+    /// Thu yeu cau controller go object ra khoi stream va tra ve pool ngay.
+    /// </summary>
+    public bool TryReleaseFromPathController()
+    {
+        return _owningPathController != null && _owningPathController.TryReleaseSpawnedObject(this);
     }
 
     public void SetControlledCollisionEnabled(bool enabled)

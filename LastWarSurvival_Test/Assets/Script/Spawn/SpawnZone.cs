@@ -169,28 +169,15 @@ public abstract class SpawnZone : CoreEventBase
 
     protected void HandleReachedEndBatch(IReadOnlyList<ObjectReachedEndInfo> entries)
     {
-        if (entries == null || entries.Count == 0) return;
+        HandleRemovedBatch(entries, despawnImmediately: false);
+    }
 
-        int removedCount = 0;
-
-        for (int i = 0; i < entries.Count; i++)
-        {
-            var entry = entries[i];
-            if (entry.SpawnZoneId != _spawnZoneId) continue;
-
-            var spawnedObject = entry.SpawnedObject;
-            if (spawnedObject == null) continue;
-
-            if (!_activeInstances.Remove(spawnedObject.CachedEntityId)) continue;
-
-            _despawnBuffer.Add(spawnedObject.gameObject);
-            removedCount++;
-        }
-
-        if (removedCount <= 0) return;
-
-        EnsureDespawnRoutine();
-        OnObjectsRemovedFromStream(removedCount);
+    /// <summary>
+    /// Xu ly object duoc go khoi stream som va tra ve pool ngay.
+    /// </summary>
+    protected void HandleReleasedBatch(IReadOnlyList<ObjectReachedEndInfo> entries)
+    {
+        HandleRemovedBatch(entries, despawnImmediately: true);
     }
 
     protected bool IsActiveInstance(ObjectSpawned spawned)
@@ -495,5 +482,42 @@ public abstract class SpawnZone : CoreEventBase
         if (pointBaker != null) return;
 
         pointBaker = FindAnyObjectByType<PointBaker>();
+    }
+
+    private void HandleRemovedBatch(IReadOnlyList<ObjectReachedEndInfo> entries, bool despawnImmediately)
+    {
+        if (entries == null || entries.Count == 0) return;
+
+        int removedCount = 0;
+
+        for (int i = 0; i < entries.Count; i++)
+        {
+            var entry = entries[i];
+            if (entry.SpawnZoneId != _spawnZoneId) continue;
+
+            var spawnedObject = entry.SpawnedObject;
+            if (spawnedObject == null) continue;
+
+            if (!_activeInstances.Remove(spawnedObject.CachedEntityId)) continue;
+
+            if (despawnImmediately)
+            {
+                if (!SpawnKit.Despawn(spawnedObject.gameObject))
+                    Debug.LogWarning($"SpawnZone '{name}' khong the tra object '{spawnedObject.name}' ve pool ngay.", this);
+            }
+            else
+            {
+                _despawnBuffer.Add(spawnedObject.gameObject);
+            }
+
+            removedCount++;
+        }
+
+        if (removedCount <= 0) return;
+
+        if (!despawnImmediately)
+            EnsureDespawnRoutine();
+
+        OnObjectsRemovedFromStream(removedCount);
     }
 }

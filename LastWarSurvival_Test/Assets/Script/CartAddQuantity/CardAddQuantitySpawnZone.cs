@@ -103,6 +103,11 @@ public class CardAddQuantitySpawnZone : SpawnZone
         HandleReachedEndBatch(entries);
     }
 
+    private void HandleObjectsReleased(IReadOnlyList<ObjectReachedEndInfo> entries)
+    {
+        HandleReleasedBatch(entries);
+    }
+
     private int ResolveTargetCardCount()
     {
         ResolvePathController();
@@ -145,6 +150,7 @@ public class CardAddQuantitySpawnZone : SpawnZone
     {
         if (_isSubscribedToController || pathController == null) return;
         pathController.ObjectsReachedEnd += HandleObjectsReachedEnd;
+        pathController.ObjectsReleased += HandleObjectsReleased;
         _isSubscribedToController = true;
     }
 
@@ -152,6 +158,7 @@ public class CardAddQuantitySpawnZone : SpawnZone
     {
         if (!_isSubscribedToController || pathController == null) return;
         pathController.ObjectsReachedEnd -= HandleObjectsReachedEnd;
+        pathController.ObjectsReleased -= HandleObjectsReleased;
         _isSubscribedToController = false;
     }
 

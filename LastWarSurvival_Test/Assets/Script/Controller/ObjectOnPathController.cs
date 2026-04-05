@@ -44,6 +44,7 @@ public class ObjectOnPathController : CoreEventBase
     private readonly List<RuntimeObject> _runtimeObjects = new List<RuntimeObject>(128);
     private readonly Dictionary<EntityId, int> _runtimeIndexMap = new Dictionary<EntityId, int>(128);
     private readonly List<ObjectReachedEndInfo> _reachedEndBuffer = new List<ObjectReachedEndInfo>(64);
+    private readonly List<ObjectReachedEndInfo> _releasedBuffer = new List<ObjectReachedEndInfo>(8);
     private readonly List<SpawnWindowWatcher> _spawnWindowWatchers = new List<SpawnWindowWatcher>(8);
 
     private PointBaker _pointBaker;
@@ -53,6 +54,7 @@ public class ObjectOnPathController : CoreEventBase
     private Vector3 _pathEndPosition;
 
     public event Action<IReadOnlyList<ObjectReachedEndInfo>> ObjectsReachedEnd;
+    public event Action<IReadOnlyList<ObjectReachedEndInfo>> ObjectsReleased;
 
     public bool HasValidPath => _hasValidPath;
     public float PathLength => _hasValidPath ? _pathCache.totalLength : 0f;
@@ -145,6 +147,7 @@ public class ObjectOnPathController : CoreEventBase
 
             // spawnedObject.SetControlledCollisionEnabled(false);
             ApplyPosition(cachedTransform, cachedRigidbody, worldPosition, useRigidbodyMove: false);
+            spawnedObject.SetPathControllerOwner(this);
 
             if (_runtimeIndexMap.TryGetValue(instanceId, out int existingIndex))
             {
@@ -197,6 +200,31 @@ public class ObjectOnPathController : CoreEventBase
             threshold = threshold,
             callback = callback
         });
+    }
+
+    /// <summary>
+    /// Goi tu object dang chay tren path khi muon roi stream som va tra ve pool ngay.
+    /// </summary>
+    public bool TryReleaseSpawnedObject(ObjectSpawned spawnedObject)
+    {
+        if (spawnedObject == null) return false;
+        if (!_runtimeIndexMap.TryGetValue(spawnedObject.CachedEntityId, out int index)) return false;
+
+        var runtimeObject = _runtimeObjects[index];
+        _releasedBuffer.Clear();
+        _releasedBuffer.Add(new ObjectReachedEndInfo
+        {
+            SpawnedObject = runtimeObject.spawnedObject,
+            SpawnZoneId = runtimeObject.spawnZoneId
+        });
+
+        RemoveRuntimeObjectAt(index);
+        RecalculateClosestDistanceToStart();
+        NotifySpawnWindowWatchers();
+
+        ObjectsReleased?.Invoke(_releasedBuffer);
+        _releasedBuffer.Clear();
+        return true;
     }
 
     protected virtual bool AcceptSpawnedObject(ObjectSpawned spawnedObject)
@@ -367,7 +395,9 @@ public class ObjectOnPathController : CoreEventBase
     private void RemoveRuntimeObjectAt(int index)
     {
         int lastIndex = _runtimeObjects.Count - 1;
-        EntityId removedId = _runtimeObjects[index].instanceId;
+        var removedObject = _runtimeObjects[index];
+        EntityId removedId = removedObject.instanceId;
+        removedObject.spawnedObject?.ClearPathControllerOwner(this);
 
         if (index != lastIndex)
         {
@@ -389,6 +419,20 @@ public class ObjectOnPathController : CoreEventBase
         int lastIndex = _spawnWindowWatchers.Count - 1;
         _spawnWindowWatchers[index] = _spawnWindowWatchers[lastIndex];
         _spawnWindowWatchers.RemoveAt(lastIndex);
+    }
+
+    private void RecalculateClosestDistanceToStart()
+    {
+        float closestDistance = float.PositiveInfinity;
+
+        for (int i = 0; i < _runtimeObjects.Count; i++)
+        {
+            float distance = _runtimeObjects[i].distance;
+            if (distance < closestDistance)
+                closestDistance = distance;
+        }
+
+        _closestDistanceToStart = _runtimeObjects.Count == 0 ? float.PositiveInfinity : closestDistance;
     }
 
     private static void ApplyPosition(Transform cachedTransform, Rigidbody cachedRigidbody, Vector3 worldPosition, bool useRigidbodyMove)
