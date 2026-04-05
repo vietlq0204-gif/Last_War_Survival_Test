@@ -112,6 +112,164 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         }
     }
 
+    public bool TryReserveNextPlacement(out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+
+        if (!TryReserveNextCell(out var reservedPlacement))
+            return false;
+
+        placement = new ColliderSurfaceGridPlacement(
+            reservedPlacement.Key,
+            reservedPlacement.Position,
+            reservedPlacement.Rotation);
+        return true;
+    }
+
+    public bool TryGetClosestPlacement(out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        if (_candidateCells.Count <= 0)
+            return false;
+
+        placement = CreatePlacement(_candidateCells[0]);
+        return true;
+    }
+
+    public bool TryGetNextAvailablePlacement(ISet<long> excludedKeys, out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        for (int i = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+
+            placement = CreatePlacement(candidate);
+            return true;
+        }
+
+        return false;
+    }
+
+    public bool TryGetRandomAvailablePlacement(
+        uint seed,
+        uint salt,
+        ISet<long> excludedKeys,
+        out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        int availableCount = 0;
+        for (int i = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+            availableCount++;
+        }
+
+        if (availableCount <= 0)
+            return false;
+
+        uint randomState = Hash(seed ^ salt ^ 0x9E3779B9u);
+        int targetIndex = (int)(randomState % (uint)availableCount);
+
+        for (int i = 0, availableIndex = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+
+            if (availableIndex == targetIndex)
+            {
+                placement = CreatePlacement(candidate);
+                return true;
+            }
+
+            availableIndex++;
+        }
+
+        return false;
+    }
+
+    public bool TryGetNearestAvailablePlacement(
+        Vector3 referencePosition,
+        ISet<long> excludedKeys,
+        out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        bool found = false;
+        float bestDistanceSqr = float.PositiveInfinity;
+
+        for (int i = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+
+            float distanceSqr = (candidate.Position - referencePosition).sqrMagnitude;
+            if (found && distanceSqr >= bestDistanceSqr)
+                continue;
+
+            bestDistanceSqr = distanceSqr;
+            placement = CreatePlacement(candidate);
+            found = true;
+        }
+
+        return found;
+    }
+
+    public void BindReservation(GameObject instance, in ColliderSurfaceGridPlacement placement)
+    {
+        if (instance == null)
+        {
+            ReleasePlacement(placement.Key);
+            return;
+        }
+
+        var reservation = instance.GetComponent<SpawnGridSlotReservation>();
+        if (reservation == null)
+            reservation = instance.AddComponent<SpawnGridSlotReservation>();
+
+        reservation.Bind(this, placement.Key);
+        _occupiedSlots.Add(placement.Key);
+        _slotReservations[placement.Key] = reservation;
+    }
+
+    public void ReleaseReservation(long slotKey)
+    {
+        ReleasePlacement(slotKey);
+    }
+
+    public bool TryGetPlacementPose(long slotKey, out Vector3 position, out Quaternion rotation)
+    {
+        position = _collider != null ? _collider.bounds.center : Vector3.zero;
+        rotation = Quaternion.identity;
+
+        if (!TryBuildFrame(out var frame))
+            return false;
+
+        UnpackKey(slotKey, out int x, out int z);
+        if (!TryCreateCandidate(frame, x, z, out var candidate))
+            return false;
+
+        position = candidate.Position;
+        rotation = candidate.Rotation;
+        return true;
+    }
+
     public void ResetPlaced()
     {
         _requestPlacements.Clear();
@@ -189,6 +347,12 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         _occupiedSlots.Remove(slotKey);
     }
 
+    private void ReleasePlacement(long slotKey)
+    {
+        _slotReservations.Remove(slotKey);
+        _occupiedSlots.Remove(slotKey);
+    }
+
     private bool TryReserveNextCell(out ReservedPlacement reservedPlacement)
     {
         reservedPlacement = default;
@@ -205,6 +369,11 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         }
 
         return false;
+    }
+
+    private static ColliderSurfaceGridPlacement CreatePlacement(in GridCell cell)
+    {
+        return new ColliderSurfaceGridPlacement(cell.Key, cell.Position, cell.Rotation);
     }
 
     private void RefreshCandidateCells()
@@ -352,6 +521,22 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         }
     }
 
+    private static void UnpackKey(long key, out int x, out int z)
+    {
+        x = (int)(key >> 32);
+        z = (int)key;
+    }
+
+    private static uint Hash(uint x)
+    {
+        x ^= x >> 16;
+        x *= 0x7feb352du;
+        x ^= x >> 15;
+        x *= 0x846ca68bu;
+        x ^= x >> 16;
+        return x;
+    }
+
     private readonly struct GridFrame
     {
         public readonly Vector3 Center;
@@ -473,6 +658,20 @@ public readonly struct ColliderSurfaceGridCellPreview
         Position = position;
         Rotation = rotation;
         IsOccupied = isOccupied;
+    }
+}
+
+public readonly struct ColliderSurfaceGridPlacement
+{
+    public readonly long Key;
+    public readonly Vector3 Position;
+    public readonly Quaternion Rotation;
+
+    public ColliderSurfaceGridPlacement(long key, Vector3 position, Quaternion rotation)
+    {
+        Key = key;
+        Position = position;
+        Rotation = rotation;
     }
 }
 

@@ -37,6 +37,17 @@ public class Player : CoreEventBase
     [Tooltip("Zone grid dùng để phân bố teammate. Nếu để trống, Player sẽ thử tìm một ColliderSurfaceGridZone trong child.")]
     [SerializeField] private ColliderSurfaceGridZone teammateSpawnGridZone;
 
+    [Header("Formation arrangement")]
+    [Tooltip("Select how teammates appear before they settle into their assigned formation slots.")]
+    [SerializeField] private FormationSpawnInitialPoseMode teammateInitialSpawnMode =
+        FormationSpawnInitialPoseMode.OwnSlot;
+
+    [Tooltip("Used when teammateInitialSpawnMode is FixedTransform.")]
+    [SerializeField] private Transform teammateFormationSpawnTransform;
+
+    [Tooltip("Used when teammateInitialSpawnMode is AuxiliaryColliderScatter.")]
+    [SerializeField] private Collider teammateFormationSpawnCollider;
+
     /// <summary>
     /// Số teammate tối đa được spawn trong một frame.
     /// Giá trị này hiện đang canh chỉnh thủ công, chưa tự động tính theo cấu hình máy hay độ nặng prefab.
@@ -99,6 +110,8 @@ public class Player : CoreEventBase
     /// Cách này đơn giản nhưng chưa biết được scene đã khởi tạo manager trễ hay thật sự thiếu.
     /// </summary>
     private bool _hasWarnedMissingSpawnManager;
+    private bool _hasWarnedMissingFormationSpawnTransform;
+    private bool _hasWarnedMissingFormationSpawnCollider;
 
     /// <summary>
     /// Token source dùng để hủy request SpawnAsync đang chờ khi Player bị disable.
@@ -212,12 +225,19 @@ public class Player : CoreEventBase
                 continue;
             }
 
-            int requestCount = Mathf.Min(_pendingTeammateSpawnCount, availableSlotCount);
+            int spawnCapacity = ResolveSpawnCapacityForMode(availableSlotCount);
+            if (spawnCapacity <= 0)
+            {
+                yield return null;
+                continue;
+            }
+
+            int requestCount = Mathf.Min(_pendingTeammateSpawnCount, spawnCapacity);
             PrepareTeammatePool(gridZone.OccupiedSlotCount + requestCount);
 
             // SpawnAsync sẽ gọi grid algorithm theo từng object và giữ slot đã đặt để tránh spawn chồng lên nhau.
             Task<SpawnHandle> spawnTask = SpawnKit.SpawnAsync(
-                CreateTeammateSpawnRequest(requestCount, gridAlgorithm),
+                CreateTeammateSpawnRequest(requestCount, gridZone, gridAlgorithm),
                 ResolveSafeMaxSpawnPerFrame(),
                 ResolveSpawnCancellationToken());
 
@@ -319,14 +339,90 @@ public class Player : CoreEventBase
         }
 
         _hasWarnedMissingSpawnManager = false;
-        return ResolveTeammateSpawnGridZone() != null;
+        return ResolveTeammateSpawnGridZone() != null
+               && ValidateInitialSpawnModeConfiguration();
+    }
+
+    private int ResolveSpawnCapacityForMode(int availableSlotCount)
+    {
+        availableSlotCount = Mathf.Max(0, availableSlotCount);
+
+        switch (teammateInitialSpawnMode)
+        {
+            case FormationSpawnInitialPoseMode.RandomEmptySlot:
+            case FormationSpawnInitialPoseMode.NearestEmptySlot:
+                return availableSlotCount / 2;
+
+            case FormationSpawnInitialPoseMode.CenterSlot:
+            case FormationSpawnInitialPoseMode.OwnSlot:
+            case FormationSpawnInitialPoseMode.FixedTransform:
+            case FormationSpawnInitialPoseMode.AuxiliaryColliderScatter:
+            default:
+                return availableSlotCount;
+        }
+    }
+
+    private bool ValidateInitialSpawnModeConfiguration()
+    {
+        switch (teammateInitialSpawnMode)
+        {
+            case FormationSpawnInitialPoseMode.FixedTransform:
+                _hasWarnedMissingFormationSpawnCollider = false;
+
+                if (teammateFormationSpawnTransform != null)
+                {
+                    _hasWarnedMissingFormationSpawnTransform = false;
+                    return true;
+                }
+
+                if (!_hasWarnedMissingFormationSpawnTransform)
+                {
+                    _hasWarnedMissingFormationSpawnTransform = true;
+                    Debug.LogWarning(
+                        "Player needs teammateFormationSpawnTransform when teammateInitialSpawnMode is FixedTransform.",
+                        this);
+                }
+
+                return false;
+
+            case FormationSpawnInitialPoseMode.AuxiliaryColliderScatter:
+                _hasWarnedMissingFormationSpawnTransform = false;
+
+                if (teammateFormationSpawnCollider != null)
+                {
+                    _hasWarnedMissingFormationSpawnCollider = false;
+                    return true;
+                }
+
+                if (!_hasWarnedMissingFormationSpawnCollider)
+                {
+                    _hasWarnedMissingFormationSpawnCollider = true;
+                    Debug.LogWarning(
+                        "Player needs teammateFormationSpawnCollider when teammateInitialSpawnMode is AuxiliaryColliderScatter.",
+                        this);
+                }
+
+                return false;
+
+            case FormationSpawnInitialPoseMode.CenterSlot:
+            case FormationSpawnInitialPoseMode.OwnSlot:
+            case FormationSpawnInitialPoseMode.RandomEmptySlot:
+            case FormationSpawnInitialPoseMode.NearestEmptySlot:
+            default:
+                _hasWarnedMissingFormationSpawnTransform = false;
+                _hasWarnedMissingFormationSpawnCollider = false;
+                return true;
+        }
     }
 
     /// <summary>
     /// Tạo SpawnRequest từ preset hiện tại và grid algorithm đang giữ occupied slot.
     /// Variant plan hiện được lấy trực tiếp từ Spawnable, chưa có chỗ chèn quy tắc ưu tiên variant theo game design.
     /// </summary>
-    private SpawnRequest CreateTeammateSpawnRequest(int teammateCount, ColliderSurfaceGridAlgorithm gridAlgorithm)
+    private SpawnRequest CreateTeammateSpawnRequest(
+        int teammateCount,
+        ColliderSurfaceGridZone gridZone,
+        ColliderSurfaceGridAlgorithm gridAlgorithm)
     {
         SpawnLifecycle? lifecycle = teammateSpawnPreset != null && teammateSpawnPreset.overrideLifecycle
             ? teammateSpawnPreset.lifecycle
@@ -341,10 +437,61 @@ public class Player : CoreEventBase
             teammateSpawnable,
             teammateCount,
             ResolveTeammateSpawnParent(),
-            gridAlgorithm,
+            CreateTeammateSpawnAlgorithm(teammateCount, gridZone, gridAlgorithm),
             teammateSpawnPreset != null ? teammateSpawnPreset.seed : 0,
             lifecycle,
             variantPlan);
+    }
+
+    private ISpawnAlgorithm CreateTeammateSpawnAlgorithm(
+        int teammateCount,
+        ColliderSurfaceGridZone gridZone,
+        ColliderSurfaceGridAlgorithm gridAlgorithm)
+    {
+        if (gridZone == null || gridAlgorithm == null)
+            return gridAlgorithm;
+
+        var zoneCollider = gridZone.ZoneCollider;
+        Vector3 fallbackPosition = zoneCollider != null ? zoneCollider.bounds.center : ResolveTeammateSpawnParent().position;
+        Quaternion fallbackRotation = gridZone.transform.rotation;
+
+        return new FormationSpawnToGridAlgorithm(
+            gridAlgorithm,
+            teammateCount,
+            teammateInitialSpawnMode,
+            CreateInitialSpawnPoseAlgorithm(teammateCount),
+            fallbackPosition,
+            fallbackRotation);
+    }
+
+    private ISpawnAlgorithm CreateInitialSpawnPoseAlgorithm(int teammateCount)
+    {
+        switch (teammateInitialSpawnMode)
+        {
+            case FormationSpawnInitialPoseMode.FixedTransform:
+                return teammateFormationSpawnTransform != null
+                    ? new FixedPoseAlgorithm(
+                        teammateFormationSpawnTransform.position,
+                        teammateFormationSpawnTransform.rotation)
+                    : null;
+
+            case FormationSpawnInitialPoseMode.AuxiliaryColliderScatter:
+                return teammateFormationSpawnCollider != null
+                    ? new ColliderVolumeAlgorithm(
+                        teammateFormationSpawnCollider,
+                        maxTryPerPoint: 32,
+                        candidatesPerPoint: 16,
+                        minDistance: 0.5f,
+                        maxCount: Mathf.Max(1, teammateCount))
+                    : null;
+
+            case FormationSpawnInitialPoseMode.CenterSlot:
+            case FormationSpawnInitialPoseMode.OwnSlot:
+            case FormationSpawnInitialPoseMode.RandomEmptySlot:
+            case FormationSpawnInitialPoseMode.NearestEmptySlot:
+            default:
+                return null;
+        }
     }
 
     /// <summary>
