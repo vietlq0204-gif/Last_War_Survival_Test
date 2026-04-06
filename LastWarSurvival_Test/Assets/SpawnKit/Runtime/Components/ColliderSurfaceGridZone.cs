@@ -79,6 +79,19 @@ namespace Vit.SpawnKit.Components
         [SerializeField]
         private bool alignRotationToZone = true;
 
+        [Header("Cell Randomization")]
+        [Tooltip("If enabled, each cell gets a deterministic random offset so the layout looks less uniform.")]
+        [SerializeField]
+        private bool randomizeCellPositions;
+
+        [Tooltip("Max planar offset per cell, expressed as a fraction of cellSize.")]
+        [SerializeField, Range(0f, 0.45f)]
+        private float randomCellOffsetStrength = 0.2f;
+
+        [Tooltip("Seed used to generate deterministic cell offsets.")]
+        [SerializeField]
+        private int randomCellOffsetSeed = 12345;
+
         /// <summary>
         /// Bật hoặc tắt vẽ grid preview trong Scene view.
         /// Preview này dùng chung algorithm runtime nên phản ánh đúng occupied slot, nhưng chưa tối ưu cho Scene view repaint quá nhiều.
@@ -196,7 +209,10 @@ namespace Vit.SpawnKit.Components
                     anchor,
                     includeCenterSlot,
                     useColliderAxes,
-                    alignRotationToZone))
+                    alignRotationToZone,
+                    randomizeCellPositions,
+                    randomCellOffsetStrength,
+                    randomCellOffsetSeed))
                 return _algorithm;
 
             _algorithm = new ColliderSurfaceGridAlgorithm(
@@ -207,7 +223,10 @@ namespace Vit.SpawnKit.Components
                 anchor,
                 includeCenterSlot,
                 useColliderAxes,
-                alignRotationToZone);
+                alignRotationToZone,
+                randomizeCellPositions,
+                randomCellOffsetStrength,
+                randomCellOffsetSeed);
             return _algorithm;
         }
 
@@ -247,6 +266,7 @@ namespace Vit.SpawnKit.Components
         {
             cellSize = Mathf.Max(0.01f, cellSize);
             edgePadding = Mathf.Max(0f, edgePadding);
+            randomCellOffsetStrength = Mathf.Clamp(randomCellOffsetStrength, 0f, 0.45f);
             previewCellFill = Mathf.Clamp(previewCellFill, 0.1f, 1f);
             previewThickness = Mathf.Max(0.001f, previewThickness);
             CacheColliderReference();

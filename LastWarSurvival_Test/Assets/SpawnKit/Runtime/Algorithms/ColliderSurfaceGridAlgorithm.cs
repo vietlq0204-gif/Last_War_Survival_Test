@@ -20,6 +20,9 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
     private readonly bool _includeCenterSlot;
     private readonly bool _useColliderAxes;
     private readonly bool _alignRotationToZone;
+    private readonly bool _randomizeCellPositions;
+    private readonly float _randomCellOffsetStrength;
+    private readonly uint _randomCellOffsetSeed;
 
     private readonly List<GridCell> _candidateCells = new List<GridCell>(128);
     private readonly Dictionary<int, ReservedPlacement> _requestPlacements = new Dictionary<int, ReservedPlacement>(32);
@@ -35,7 +38,10 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         ColliderGridPlaneAnchor anchor = ColliderGridPlaneAnchor.Bottom,
         bool includeCenterSlot = true,
         bool useColliderAxes = true,
-        bool alignRotationToZone = true)
+        bool alignRotationToZone = true,
+        bool randomizeCellPositions = false,
+        float randomCellOffsetStrength = 0f,
+        int randomCellOffsetSeed = 0)
     {
         _collider = collider;
         _cellSize = Mathf.Max(0.01f, cellSize);
@@ -45,6 +51,9 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         _includeCenterSlot = includeCenterSlot;
         _useColliderAxes = useColliderAxes;
         _alignRotationToZone = alignRotationToZone;
+        _randomizeCellPositions = randomizeCellPositions;
+        _randomCellOffsetStrength = Mathf.Clamp(randomCellOffsetStrength, 0f, 0.45f);
+        _randomCellOffsetSeed = unchecked((uint)randomCellOffsetSeed);
     }
 
     public int OccupiedSlotCount
@@ -64,7 +73,10 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         ColliderGridPlaneAnchor anchor,
         bool includeCenterSlot,
         bool useColliderAxes,
-        bool alignRotationToZone)
+        bool alignRotationToZone,
+        bool randomizeCellPositions,
+        float randomCellOffsetStrength,
+        int randomCellOffsetSeed)
     {
         return _collider == collider
                && Mathf.Approximately(_cellSize, Mathf.Max(0.01f, cellSize))
@@ -73,7 +85,10 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
                && _anchor == anchor
                && _includeCenterSlot == includeCenterSlot
                && _useColliderAxes == useColliderAxes
-               && _alignRotationToZone == alignRotationToZone;
+               && _alignRotationToZone == alignRotationToZone
+               && _randomizeCellPositions == randomizeCellPositions
+               && Mathf.Approximately(_randomCellOffsetStrength, Mathf.Clamp(randomCellOffsetStrength, 0f, 0.45f))
+               && _randomCellOffsetSeed == unchecked((uint)randomCellOffsetSeed);
     }
 
     public int GetAvailableSlotCount()
@@ -446,10 +461,17 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
     {
         candidate = default;
 
-        Vector3 surfacePoint = frame.Center + frame.Right * (x * _cellSize) + frame.Forward * (z * _cellSize);
-        Vector3 closestPoint = _collider.ClosestPoint(surfacePoint);
-        if ((closestPoint - surfacePoint).sqrMagnitude > ClosestPointToleranceSqr)
+        Vector3 baseSurfacePoint = frame.Center + frame.Right * (x * _cellSize) + frame.Forward * (z * _cellSize);
+        if (!IsPointInsideCollider(baseSurfacePoint))
             return false;
+
+        Vector3 surfacePoint = baseSurfacePoint;
+        if (_randomizeCellPositions && _randomCellOffsetStrength > 0f)
+        {
+            Vector3 randomizedSurfacePoint = baseSurfacePoint + ResolveCellOffset(frame, x, z);
+            if (IsPointInsideCollider(randomizedSurfacePoint))
+                surfacePoint = randomizedSurfacePoint;
+        }
 
         Vector3 position = surfacePoint + frame.Up * _verticalOffset;
         candidate = new GridCell(
@@ -461,6 +483,35 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
             x * x + z * z,
             Mathf.Abs(x) + Mathf.Abs(z));
         return true;
+    }
+
+    private bool IsPointInsideCollider(Vector3 point)
+    {
+        Vector3 closestPoint = _collider.ClosestPoint(point);
+        return (closestPoint - point).sqrMagnitude <= ClosestPointToleranceSqr;
+    }
+
+    private Vector3 ResolveCellOffset(in GridFrame frame, int x, int z)
+    {
+        uint hashX = Hash(PackCellHash(x, z, 0x68bc21ebu));
+        uint hashZ = Hash(PackCellHash(x, z, 0x02e5be93u));
+
+        float offsetRange = _cellSize * _randomCellOffsetStrength;
+        float offsetX = Mathf.Lerp(-offsetRange, offsetRange, hashX / (float)uint.MaxValue);
+        float offsetZ = Mathf.Lerp(-offsetRange, offsetRange, hashZ / (float)uint.MaxValue);
+
+        return frame.Right * offsetX + frame.Forward * offsetZ;
+    }
+
+    private uint PackCellHash(int x, int z, uint salt)
+    {
+        unchecked
+        {
+            uint hash = _randomCellOffsetSeed ^ salt;
+            hash ^= (uint)x * 0x9E3779B9u;
+            hash ^= (uint)z * 0x85EBCA6Bu;
+            return hash;
+        }
     }
 
     private Vector3 ResolveAnchorCenter(Vector3 colliderCenter, Vector3 up)
