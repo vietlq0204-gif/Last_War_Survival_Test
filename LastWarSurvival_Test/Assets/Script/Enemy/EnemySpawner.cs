@@ -50,7 +50,7 @@ public class EnemySpawner : SpawnGridQueue
         return gridZone != null ? gridZone.GetAvailableSlotCount() : 0;
     }
 
-    public int GetOccupiedSlotCount()
+    public override int GetOccupiedSlotCount()
     {
         var gridZone = ResolveGridZone();
         return gridZone != null ? gridZone.OccupiedSlotCount : 0;

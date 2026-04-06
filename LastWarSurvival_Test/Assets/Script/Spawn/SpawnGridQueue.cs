@@ -97,6 +97,12 @@ public class SpawnGridQueue : CoreEventBase
         return true;
     }
 
+    public virtual int GetOccupiedSlotCount()
+    {
+        var gridZone = ResolveSpawnGridZone();
+        return gridZone != null ? gridZone.OccupiedSlotCount : 0;
+    }
+
     private IEnumerator SpawnRoutine()
     {
         while (_pendingSpawnCount > 0)
