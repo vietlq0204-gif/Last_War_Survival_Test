@@ -1,106 +1,61 @@
 using UnityEngine;
-using Vit.SpawnKit.Api;
 
 [DisallowMultipleComponent]
-[RequireComponent(typeof(Rigidbody))]
-[RequireComponent(typeof(Collider))]
 public sealed class Bullet : ObjectSpawned
 {
-    private const string EnemyTag = "Enemy";
-
     [SerializeField] private BulletSO bulletData;
     [SerializeField, Min(0f)] private float moveSpeed = 24f;
+    [SerializeField, Min(0f)] private float hitRadius = 0.12f;
 
-    private Vector3 _travelDirection = Vector3.forward;
-    private bool _isLaunched;
+    private Transform _visualTransform;
+    private TrailRenderer[] _trailRenderers;
 
     public BulletSO BulletData => bulletData;
     public int Damage => bulletData != null ? bulletData.Damage : 0;
+    public float MoveSpeed => moveSpeed;
+    public float HitRadius => hitRadius;
+
+    protected override void Awake()
+    {
+        base.Awake();
+        _visualTransform = CachedTransform != null ? CachedTransform : transform;
+        _trailRenderers = GetComponentsInChildren<TrailRenderer>(true);
+    }
 
     public override void OnSpawnedFromPool()
     {
         base.OnSpawnedFromPool();
-
-        _travelDirection = Vector3.forward;
-        _isLaunched = false;
-        SetControlledCollisionEnabled(true);
-
-        if (CachedRigidbody != null)
-            CachedRigidbody.linearVelocity = Vector3.zero;
+        ResetVisualState();
     }
 
     public override void OnDespawnedToPool()
     {
-        _travelDirection = Vector3.forward;
-        _isLaunched = false;
+        ResetVisualState();
         base.OnDespawnedToPool();
     }
 
-    public void LaunchForward()
+    public void SetWorldPose(Vector3 position, Vector3 forward)
     {
-        Launch(Vector3.forward);
+        Quaternion rotation = forward.sqrMagnitude > 1e-6f
+            ? Quaternion.LookRotation(forward.normalized, Vector3.up)
+            : _visualTransform.rotation;
+
+        _visualTransform.SetPositionAndRotation(position, rotation);
     }
 
-    public void Launch(Vector3 worldDirection)
+    public void SetWorldPosition(Vector3 position)
     {
-        if (worldDirection.sqrMagnitude <= 1e-6f)
-            worldDirection = Vector3.forward;
-
-        _travelDirection = worldDirection.normalized;
-        _isLaunched = true;
-
-        var targetTransform = CachedTransform != null ? CachedTransform : transform;
-        targetTransform.rotation = Quaternion.LookRotation(_travelDirection, Vector3.up);
-
-        if (CanUseRigidbodyMotion())
-            CachedRigidbody.linearVelocity = _travelDirection * moveSpeed;
+        _visualTransform.position = position;
     }
 
-    private void Update()
+    private void ResetVisualState()
     {
-        if (!_isLaunched || moveSpeed <= 0f || CanUseRigidbodyMotion())
+        if (_trailRenderers == null)
             return;
 
-        var targetTransform = CachedTransform != null ? CachedTransform : transform;
-        targetTransform.position += _travelDirection * (moveSpeed * Time.deltaTime);
-    }
-
-    private void OnTriggerEnter(Collider other)
-    {
-        HandleHit(other);
-    }
-
-    private void OnCollisionEnter(Collision collision)
-    {
-        HandleHit(collision != null ? collision.collider : null);
-    }
-
-    private void HandleHit(Collider other)
-    {
-        if (!_isLaunched || !HasTagInHierarchy(other, EnemyTag))
-            return;
-
-        SpawnKit.Despawn(gameObject);
-    }
-
-    private bool CanUseRigidbodyMotion()
-    {
-        return CachedRigidbody != null && !CachedRigidbody.isKinematic;
-    }
-
-    private static bool HasTagInHierarchy(Collider other, string requiredTag)
-    {
-        if (other == null)
-            return false;
-
-        if (other.CompareTag(requiredTag))
-            return true;
-
-        var attachedRigidbody = other.attachedRigidbody;
-        if (attachedRigidbody != null && attachedRigidbody.CompareTag(requiredTag))
-            return true;
-
-        Transform root = other.transform.root;
-        return root != null && root.CompareTag(requiredTag);
+        for (int i = 0; i < _trailRenderers.Length; i++)
+        {
+            _trailRenderers[i]?.Clear();
+        }
     }
 }

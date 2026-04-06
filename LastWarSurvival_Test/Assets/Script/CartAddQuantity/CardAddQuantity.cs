@@ -95,9 +95,9 @@ public class CardAddQuantity : ObjectSpawned
 
         _hasRaisedValidCollision = true;
         _isWaitingForPlayerExit = true;
-        Debug.Log(
-            $"CardAddQuantity '{name}' va cham Player, raise CollitionEvent voi data '{cardData.name}' (spawn {cardData.TeammateSpawnCount}).",
-            this);
+        // Debug.Log(
+        //     $"CardAddQuantity '{name}' va cham Player, raise CollitionEvent voi data '{cardData.name}' (spawn {cardData.TeammateSpawnCount}).",
+        //     this);
         CoreEvents.collition.Raise(collitionEvent);
     }
 
@@ -110,7 +110,7 @@ public class CardAddQuantity : ObjectSpawned
         if (!IsPlayerCollider(other)) return;
 
         _isWaitingForPlayerExit = false;
-        Debug.Log($"CardAddQuantity '{name}' roi trigger Player, yeu cau tra ve pool ngay.", this);
+        // Debug.Log($"CardAddQuantity '{name}' roi trigger Player, yeu cau tra ve pool ngay.", this);
 
         if (TryReleaseFromPathController())
             return;

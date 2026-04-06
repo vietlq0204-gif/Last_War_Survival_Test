@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using UnityEngine;
 using Vit.SpawnKit.Algorithms;
 using Vit.SpawnKit.Api;
-using Vit.SpawnKit.Data;
 using Vit.SpawnKit.ScriptableObjects;
 using Vit.SpawnKit.Services;
 
@@ -11,58 +10,96 @@ public sealed class BulletSpawner : MonoBehaviour
 {
     private const string PlayerTag = "Player";
     private const string HomeTag = "Home";
+    private const string EnemyTag = "Enemy";
+    private static readonly Vector3 BulletDirection = Vector3.forward;
 
     [Header("References")]
     [SerializeField] private SpawnableSO bulletSpawnable;
     [SerializeField] private SpawnGridQueue teammateGridSource;
     [SerializeField] private Transform bulletParent;
     [SerializeField] private Collider homeCollider;
-    [SerializeField] private Collider[] bulletSpawnVolumes;
+    [SerializeField] private Collider bulletSpawnAreaCollider;
+    [SerializeField] private Transform[] muzzles;
 
     [Header("Fire")]
     [SerializeField, Min(0.01f)] private float fireInterval = 0.15f;
     [SerializeField, Min(1)] private int bulletsPerTeammate = 1;
     [SerializeField, Min(0)] private int maxBulletsPerVolley;
-    [SerializeField, Min(0f)] private float bulletLifetime = 2f;
-    [SerializeField, Min(0)] private int poolSizePadding = 8;
+    [SerializeField, Min(1)] private int maxActiveBullets = 128;
+    [SerializeField, Min(0.01f)] private float bulletLifetime = 2f;
     [SerializeField] private bool prewarmPoolOnStart = true;
+    [SerializeField] private bool clampVolleyToSustainableCadence = true;
 
-    [Header("Distribution")]
-    [SerializeField, Min(1)] private int maxTryPerBullet = 24;
-    [SerializeField, Min(1)] private int candidatesPerBullet = 16;
-    [SerializeField, Min(0f)] private float minSpawnDistance = 0.35f;
-    [SerializeField, Min(1)] private int placementBufferCapacity = 128;
+    [Header("Spawn Area")]
+    [SerializeField] private bool useFormationSpawnColliderAsSpawnArea = true;
+    [SerializeField, Min(0f)] private float spawnAreaWidthPerTeammate = 0.08f;
+    [SerializeField, Min(0f)] private float spawnAreaHeightPerTeammate = 0f;
+    [SerializeField, Min(0f)] private float maxSpawnAreaWidth = 4f;
+    [SerializeField, Min(0f)] private float maxSpawnAreaHeight = 1.5f;
 
-    [Header("Home Detection")]
-    [SerializeField] private LayerMask playerDetectionLayers = ~0;
-    [SerializeField, Min(1)] private int overlapBufferSize = 8;
+    [Header("Hit Detection")]
+    [SerializeField] private LayerMask targetLayers = 1 << 6;
+    [SerializeField, Min(1)] private int hitBufferSize = 8;
 
     private readonly List<GameObject> _spawnBuffer = new List<GameObject>(64);
+    private readonly List<ActiveBulletRuntime> _activeBullets = new List<ActiveBulletRuntime>(128);
+    private readonly Dictionary<EntityId, Transform> _playersInsideHome = new Dictionary<EntityId, Transform>(4);
+    private readonly List<EntityId> _playersPendingRemoval = new List<EntityId>(4);
 
-    private RuntimeMultiColliderVolumeAlgorithm _spawnAlgorithm;
-    private Collider[] _resolvedSpawnVolumes = System.Array.Empty<Collider>();
-    private Collider[] _playerOverlapBuffer = System.Array.Empty<Collider>();
+    private readonly BulletSpawnPoseAlgorithm _spawnAlgorithm = new BulletSpawnPoseAlgorithm();
+
+    private Transform[] _resolvedMuzzles = System.Array.Empty<Transform>();
+    private RaycastHit[] _hitBuffer = System.Array.Empty<RaycastHit>();
+    private Collider[] _homeOverlapBuffer = new Collider[8];
 
     private float _nextFireTime;
     private int _preparedPoolSize;
     private SpawnableSO _preparedPoolSpawnable;
+    private SpawnManager _cachedSpawnManager;
+
     private bool _hasWarnedMissingSpawnable;
     private bool _hasWarnedMissingTeammateGrid;
     private bool _hasWarnedMissingHomeCollider;
     private bool _hasWarnedMissingHomeTag;
+    private bool _hasWarnedHomeNotTrigger;
     private bool _hasWarnedMissingSpawnManager;
-    private bool _hasWarnedMissingSpawnVolumes;
+    private bool _hasWarnedMissingMuzzles;
     private bool _hasWarnedMissingBulletComponent;
+
+    private BoxCollider _cachedSpawnAreaBoxCollider;
+    private Vector3 _spawnAreaBaseSize;
+    private Vector3 _spawnAreaBaseCenter;
+    private int _lastSpawnAreaTeammateCount = -1;
+
+    private struct ActiveBulletRuntime
+    {
+        public Bullet bullet;
+        public Transform cachedTransform;
+        public Vector3 position;
+        public float speed;
+        public float remainingLifetime;
+        public float hitRadius;
+    }
 
     private void Reset()
     {
         AutoAssignHomeCollider();
+        AutoAssignBulletSpawnAreaCollider();
     }
 
     private void Awake()
     {
         AutoAssignHomeCollider();
         EnsureRuntimeCaches();
+        EnsureHomeTriggerRelays();
+        RefreshHomeOccupants();
+    }
+
+    private void OnEnable()
+    {
+        EnsureHomeTriggerRelays();
+        RefreshHomeOccupants();
+        _nextFireTime = Time.time;
     }
 
     private void OnValidate()
@@ -70,43 +107,118 @@ public sealed class BulletSpawner : MonoBehaviour
         fireInterval = Mathf.Max(0.01f, fireInterval);
         bulletsPerTeammate = Mathf.Max(1, bulletsPerTeammate);
         maxBulletsPerVolley = Mathf.Max(0, maxBulletsPerVolley);
-        bulletLifetime = Mathf.Max(0f, bulletLifetime);
-        poolSizePadding = Mathf.Max(0, poolSizePadding);
-        maxTryPerBullet = Mathf.Max(1, maxTryPerBullet);
-        candidatesPerBullet = Mathf.Max(1, candidatesPerBullet);
-        minSpawnDistance = Mathf.Max(0f, minSpawnDistance);
-        placementBufferCapacity = Mathf.Max(1, placementBufferCapacity);
-        overlapBufferSize = Mathf.Max(1, overlapBufferSize);
+        maxActiveBullets = Mathf.Max(1, maxActiveBullets);
+        bulletLifetime = Mathf.Max(0.01f, bulletLifetime);
+        spawnAreaWidthPerTeammate = Mathf.Max(0f, spawnAreaWidthPerTeammate);
+        spawnAreaHeightPerTeammate = Mathf.Max(0f, spawnAreaHeightPerTeammate);
+        maxSpawnAreaWidth = Mathf.Max(0f, maxSpawnAreaWidth);
+        maxSpawnAreaHeight = Mathf.Max(0f, maxSpawnAreaHeight);
+        hitBufferSize = Mathf.Max(1, hitBufferSize);
 
         AutoAssignHomeCollider();
+        AutoAssignBulletSpawnAreaCollider();
         EnsureRuntimeCaches();
     }
 
     private void Start()
     {
         EnsureRuntimeCaches();
+        EnsureHomeTriggerRelays();
+        RefreshHomeOccupants();
 
         if (prewarmPoolOnStart)
-            PreparePool(Mathf.Max(1, ResolveVolleyBulletCount()));
+            PreparePool();
     }
 
     private void Update()
     {
+        UpdateActiveBullets(Time.deltaTime);
+        ValidateTrackedPlayersInsideHome();
+
         if (Time.time < _nextFireTime)
             return;
 
         if (!CanFire())
             return;
 
-        int bulletCount = ResolveVolleyBulletCount();
+        if (!HasPlayerInsideHome())
+            return;
+
+        int teammateCount = ResolveTeammateCount();
+        if (teammateCount <= 0)
+            return;
+
+        UpdateSpawnAreaSize(teammateCount);
+
+        int bulletCount = ResolveVolleyBulletCount(teammateCount);
         if (bulletCount <= 0)
             return;
 
-        if (!IsPlayerInsideHome())
+        if (FireVolley(bulletCount))
+            ScheduleNextFireTime();
+    }
+
+    private void OnDisable()
+    {
+        ReleaseHomeTriggerRelays();
+        DespawnAllActiveBullets();
+        _playersInsideHome.Clear();
+        _nextFireTime = 0f;
+    }
+
+    private void OnDestroy()
+    {
+        ReleaseHomeTriggerRelays();
+    }
+
+    private void OnTriggerEnter(Collider other)
+    {
+        if (homeCollider == null || homeCollider.gameObject != gameObject)
             return;
 
-        if (FireVolley(bulletCount))
-            _nextFireTime = Time.time + fireInterval;
+        HandleHomeTriggerEnter(other);
+    }
+
+    private void OnTriggerExit(Collider other)
+    {
+        if (homeCollider == null || homeCollider.gameObject != gameObject)
+            return;
+
+        HandleHomeTriggerExit(other);
+    }
+
+    public void HandleHomeTriggerEnterFromRelay(Collider sourceCollider, Collider other)
+    {
+        if (!IsManagedHomeCollider(sourceCollider))
+            return;
+
+        HandleHomeTriggerEnter(other);
+    }
+
+    public void HandleHomeTriggerExitFromRelay(Collider sourceCollider, Collider other)
+    {
+        if (!IsManagedHomeCollider(sourceCollider))
+            return;
+
+        HandleHomeTriggerExit(other);
+    }
+
+    private void HandleHomeTriggerEnter(Collider other)
+    {
+        Transform playerRoot = ResolveTaggedTransform(other, PlayerTag);
+        if (playerRoot == null)
+            return;
+
+        RefreshTrackedPlayerState(playerRoot);
+    }
+
+    private void HandleHomeTriggerExit(Collider other)
+    {
+        Transform playerRoot = ResolveTaggedTransform(other, PlayerTag);
+        if (playerRoot == null)
+            return;
+
+        RefreshTrackedPlayerState(playerRoot);
     }
 
     private bool CanFire()
@@ -127,7 +239,7 @@ public sealed class BulletSpawner : MonoBehaviour
 
         _hasWarnedMissingTeammateGrid = false;
 
-        if (!HasSpawnManager())
+        if (ResolveSpawnManager() == null)
         {
             WarnOnce(ref _hasWarnedMissingSpawnManager, "BulletSpawner could not find a SpawnManager in the scene.");
             return false;
@@ -135,7 +247,7 @@ public sealed class BulletSpawner : MonoBehaviour
 
         _hasWarnedMissingSpawnManager = false;
 
-        var resolvedHomeCollider = ResolveHomeCollider();
+        Collider resolvedHomeCollider = ResolveHomeCollider();
         if (resolvedHomeCollider == null)
         {
             WarnOnce(ref _hasWarnedMissingHomeCollider, "BulletSpawner needs a Home collider.");
@@ -152,88 +264,222 @@ public sealed class BulletSpawner : MonoBehaviour
 
         _hasWarnedMissingHomeTag = false;
 
-        if (BuildSpawnVolumeSet(resolvedHomeCollider) <= 0)
+        if (!resolvedHomeCollider.isTrigger)
         {
-            WarnOnce(ref _hasWarnedMissingSpawnVolumes, "BulletSpawner needs at least one valid spawn collider.");
+            WarnOnce(ref _hasWarnedHomeNotTrigger, "BulletSpawner homeCollider must be a trigger collider.");
             return false;
         }
 
-        _hasWarnedMissingSpawnVolumes = false;
+        _hasWarnedHomeNotTrigger = false;
+
+        if (ResolveBulletSpawnAreaCollider() == null && BuildMuzzleSet() <= 0)
+        {
+            WarnOnce(ref _hasWarnedMissingMuzzles, "BulletSpawner needs a spawn area collider or at least one muzzle transform.");
+            return false;
+        }
+
+        _hasWarnedMissingMuzzles = false;
         return true;
     }
 
     private bool FireVolley(int bulletCount)
     {
-        var resolvedHomeCollider = ResolveHomeCollider();
-        if (resolvedHomeCollider == null)
+        int muzzleCount = BuildMuzzleSet();
+        Collider spawnAreaCollider = ResolveBulletSpawnAreaCollider();
+        if (spawnAreaCollider == null && muzzleCount <= 0)
             return false;
 
-        int spawnVolumeCount = BuildSpawnVolumeSet(resolvedHomeCollider);
-        if (spawnVolumeCount <= 0)
-            return false;
-
-        PreparePool(bulletCount);
+        PreparePool();
 
         Transform spawnParent = ResolveSpawnParent();
         Vector3 fallbackPosition = spawnParent != null ? spawnParent.position : transform.position;
-
-        _spawnAlgorithm.Configure(
-            _resolvedSpawnVolumes,
-            spawnVolumeCount,
-            fallbackPosition,
-            maxTryPerBullet,
-            candidatesPerBullet,
-            minSpawnDistance,
-            Mathf.Max(placementBufferCapacity, bulletCount));
-
-        SpawnLifecycle? lifecycle = bulletLifetime > 0f
-            ? new SpawnLifecycle
-            {
-                mode = SpawnReleaseMode.AfterSeconds,
-                delaySeconds = bulletLifetime,
-                useUnscaledTime = false
-            }
-            : (SpawnLifecycle?)null;
+        _spawnAlgorithm.Configure(spawnAreaCollider, bulletCount, _resolvedMuzzles, muzzleCount, fallbackPosition);
 
         int spawnedCount = SpawnKit.SpawnNonAlloc(
             bulletSpawnable,
             bulletCount,
             _spawnBuffer,
             spawnParent,
-            _spawnAlgorithm,
-            seed: 0,
-            lifecycle: lifecycle);
+            _spawnAlgorithm);
 
         if (spawnedCount <= 0)
             return false;
 
         for (int i = 0; i < spawnedCount; i++)
         {
-            var bulletObject = _spawnBuffer[i];
+            GameObject bulletObject = _spawnBuffer[i];
             if (bulletObject == null)
                 continue;
 
-            if (bulletObject.TryGetComponent(out Bullet bullet))
+            if (!bulletObject.TryGetComponent(out Bullet bullet))
             {
-                bullet.LaunchForward();
-                _hasWarnedMissingBulletComponent = false;
+                WarnOnce(
+                    ref _hasWarnedMissingBulletComponent,
+                    $"Spawned bullet '{bulletObject.name}' is missing a Bullet component.");
+                SpawnKit.Despawn(bulletObject);
                 continue;
             }
 
-            WarnOnce(
-                ref _hasWarnedMissingBulletComponent,
-                $"Spawned bullet '{bulletObject.name}' is missing a Bullet component.");
+            _hasWarnedMissingBulletComponent = false;
+
+            Transform bulletTransform = bullet.CachedTransform != null ? bullet.CachedTransform : bullet.transform;
+            Vector3 startPosition = bulletTransform.position;
+
+            bullet.SetWorldPose(startPosition, BulletDirection);
+            RegisterActiveBullet(bullet, bulletTransform, startPosition);
         }
 
         return true;
     }
 
-    private int ResolveVolleyBulletCount()
+    private void RegisterActiveBullet(Bullet bullet, Transform bulletTransform, Vector3 startPosition)
     {
-        if (teammateGridSource == null)
-            return 0;
+        if (bullet == null || bulletTransform == null)
+            return;
 
-        int teammateCount = Mathf.Max(0, teammateGridSource.GetOccupiedSlotCount());
+        _activeBullets.Add(new ActiveBulletRuntime
+        {
+            bullet = bullet,
+            cachedTransform = bulletTransform,
+            position = startPosition,
+            speed = Mathf.Max(0f, bullet.MoveSpeed),
+            remainingLifetime = bulletLifetime,
+            hitRadius = Mathf.Max(0f, bullet.HitRadius),
+        });
+    }
+
+    private void UpdateActiveBullets(float deltaTime)
+    {
+        if (_activeBullets.Count == 0 || deltaTime <= 0f)
+            return;
+
+        float targetDistanceScale = deltaTime;
+        int layerMask = ResolveTargetLayerMask();
+
+        for (int i = _activeBullets.Count - 1; i >= 0; i--)
+        {
+            var runtime = _activeBullets[i];
+            if (!IsRuntimeValid(runtime))
+            {
+                RemoveActiveBulletAt(i);
+                continue;
+            }
+
+            runtime.remainingLifetime -= deltaTime;
+            if (runtime.remainingLifetime <= 0f)
+            {
+                DespawnRuntimeBullet(runtime);
+                RemoveActiveBulletAt(i);
+                continue;
+            }
+
+            float stepDistance = runtime.speed * targetDistanceScale;
+            if (stepDistance <= 0f)
+            {
+                _activeBullets[i] = runtime;
+                continue;
+            }
+
+            if (TryResolveEnemyHit(runtime.position, stepDistance, runtime.hitRadius, layerMask, out Vector3 hitPoint))
+            {
+                runtime.bullet.SetWorldPosition(hitPoint);
+                DespawnRuntimeBullet(runtime);
+                RemoveActiveBulletAt(i);
+                continue;
+            }
+
+            runtime.position += BulletDirection * stepDistance;
+            runtime.bullet.SetWorldPosition(runtime.position);
+            _activeBullets[i] = runtime;
+        }
+    }
+
+    private bool TryResolveEnemyHit(
+        Vector3 origin,
+        float distance,
+        float hitRadius,
+        int layerMask,
+        out Vector3 hitPoint)
+    {
+        hitPoint = origin + BulletDirection * distance;
+        int hitCount = hitRadius > 0f
+            ? Physics.SphereCastNonAlloc(
+                origin,
+                hitRadius,
+                BulletDirection,
+                _hitBuffer,
+                distance,
+                layerMask,
+                QueryTriggerInteraction.Collide)
+            : Physics.RaycastNonAlloc(
+                origin,
+                BulletDirection,
+                _hitBuffer,
+                distance,
+                layerMask,
+                QueryTriggerInteraction.Collide);
+
+        if (hitCount <= 0)
+            return false;
+
+        float nearestDistance = float.PositiveInfinity;
+        bool foundEnemy = false;
+
+        for (int i = 0; i < hitCount; i++)
+        {
+            RaycastHit hit = _hitBuffer[i];
+            Collider hitCollider = hit.collider;
+            if (ResolveTaggedTransform(hitCollider, EnemyTag) == null)
+                continue;
+
+            if (hit.distance >= nearestDistance)
+                continue;
+
+            nearestDistance = hit.distance;
+            hitPoint = hit.point;
+            foundEnemy = true;
+        }
+
+        return foundEnemy;
+    }
+
+    private bool IsRuntimeValid(ActiveBulletRuntime runtime)
+    {
+        return runtime.bullet != null
+               && runtime.cachedTransform != null
+               && runtime.bullet.gameObject.activeInHierarchy;
+    }
+
+    private void DespawnRuntimeBullet(ActiveBulletRuntime runtime)
+    {
+        if (runtime.bullet == null)
+            return;
+
+        SpawnKit.Despawn(runtime.bullet.gameObject);
+    }
+
+    private void DespawnAllActiveBullets()
+    {
+        for (int i = _activeBullets.Count - 1; i >= 0; i--)
+        {
+            DespawnRuntimeBullet(_activeBullets[i]);
+        }
+
+        _activeBullets.Clear();
+    }
+
+    private void RemoveActiveBulletAt(int index)
+    {
+        int lastIndex = _activeBullets.Count - 1;
+        if (index < 0 || index > lastIndex)
+            return;
+
+        _activeBullets[index] = _activeBullets[lastIndex];
+        _activeBullets.RemoveAt(lastIndex);
+    }
+
+    private int ResolveVolleyBulletCount(int teammateCount)
+    {
         if (teammateCount <= 0)
             return 0;
 
@@ -241,96 +487,29 @@ public sealed class BulletSpawner : MonoBehaviour
         if (maxBulletsPerVolley > 0)
             bulletCount = Mathf.Min(bulletCount, maxBulletsPerVolley);
 
-        return bulletCount;
+        if (clampVolleyToSustainableCadence)
+            bulletCount = Mathf.Min(bulletCount, ResolveSustainableVolleyCount());
+
+        int availableSlots = Mathf.Max(0, maxActiveBullets - _activeBullets.Count);
+        if (availableSlots <= 0)
+            return 0;
+
+        return Mathf.Min(bulletCount, availableSlots);
     }
 
-    private bool IsPlayerInsideHome()
+    private bool HasPlayerInsideHome()
     {
-        var resolvedHomeCollider = ResolveHomeCollider();
-        if (resolvedHomeCollider == null || !resolvedHomeCollider.CompareTag(HomeTag))
-            return false;
-
-        EnsurePlayerOverlapBuffer();
-
-        int hitCount = OverlapHomeVolume(resolvedHomeCollider);
-        for (int i = 0; i < hitCount; i++)
-        {
-            var hitCollider = _playerOverlapBuffer[i];
-            if (hitCollider == null || hitCollider == resolvedHomeCollider)
-                continue;
-
-            if (HasTagInHierarchy(hitCollider, PlayerTag))
-                return true;
-        }
-
-        return false;
+        return _playersInsideHome.Count > 0;
     }
 
-    private int OverlapHomeVolume(Collider sourceCollider)
+    private int ResolveTeammateCount()
     {
-        int layerMask = ResolvePlayerDetectionLayerMask();
-
-        if (sourceCollider is BoxCollider boxCollider)
-        {
-            Vector3 halfExtents = Vector3.Scale(boxCollider.size * 0.5f, Abs(boxCollider.transform.lossyScale));
-            Vector3 center = boxCollider.transform.TransformPoint(boxCollider.center);
-
-            return Physics.OverlapBoxNonAlloc(
-                center,
-                halfExtents,
-                _playerOverlapBuffer,
-                boxCollider.transform.rotation,
-                layerMask,
-                QueryTriggerInteraction.Collide);
-        }
-
-        if (sourceCollider is SphereCollider sphereCollider)
-        {
-            Vector3 center = sphereCollider.transform.TransformPoint(sphereCollider.center);
-            float radius = sphereCollider.radius * MaxAbs(sphereCollider.transform.lossyScale);
-
-            return Physics.OverlapSphereNonAlloc(
-                center,
-                radius,
-                _playerOverlapBuffer,
-                layerMask,
-                QueryTriggerInteraction.Collide);
-        }
-
-        if (sourceCollider is CapsuleCollider capsuleCollider)
-        {
-            Vector3 lossyScale = Abs(capsuleCollider.transform.lossyScale);
-            Vector3 center = capsuleCollider.transform.TransformPoint(capsuleCollider.center);
-            Vector3 direction = ResolveCapsuleDirection(capsuleCollider.transform, capsuleCollider.direction);
-            float radius = capsuleCollider.radius * ResolveCapsuleRadiusScale(lossyScale, capsuleCollider.direction);
-            float height = Mathf.Max(
-                capsuleCollider.height * ResolveCapsuleHeightScale(lossyScale, capsuleCollider.direction),
-                radius * 2f);
-            float halfSegment = Mathf.Max(0f, (height * 0.5f) - radius);
-            Vector3 segmentOffset = direction * halfSegment;
-
-            return Physics.OverlapCapsuleNonAlloc(
-                center + segmentOffset,
-                center - segmentOffset,
-                radius,
-                _playerOverlapBuffer,
-                layerMask,
-                QueryTriggerInteraction.Collide);
-        }
-
-        Bounds bounds = sourceCollider.bounds;
-        return Physics.OverlapBoxNonAlloc(
-            bounds.center,
-            bounds.extents,
-            _playerOverlapBuffer,
-            Quaternion.identity,
-            layerMask,
-            QueryTriggerInteraction.Collide);
+        return teammateGridSource != null ? Mathf.Max(0, teammateGridSource.GetOccupiedSlotCount()) : 0;
     }
 
-    private void PreparePool(int bulletCount)
+    private void PreparePool()
     {
-        if (bulletSpawnable == null || bulletCount <= 0)
+        if (bulletSpawnable == null)
             return;
 
         if (_preparedPoolSpawnable != bulletSpawnable)
@@ -339,28 +518,75 @@ public sealed class BulletSpawner : MonoBehaviour
             _preparedPoolSize = 0;
         }
 
-        int concurrentVolleys = bulletLifetime > 0f && fireInterval > 0f
-            ? Mathf.Max(1, Mathf.CeilToInt(bulletLifetime / fireInterval))
-            : 2;
-
-        int desiredPoolSize = MultiplyClamped(bulletCount, concurrentVolleys);
-        desiredPoolSize = Mathf.Max(1, desiredPoolSize + poolSizePadding);
-
+        int desiredPoolSize = Mathf.Max(1, maxActiveBullets);
         if (desiredPoolSize <= _preparedPoolSize)
             return;
 
-        int prewarmCount = Mathf.Min(desiredPoolSize, MultiplyClamped(bulletCount, Mathf.Min(concurrentVolleys, 2)) + poolSizePadding);
-        int growStep = Mathf.Max(1, bulletCount);
+        int prewarmCount = prewarmPoolOnStart ? desiredPoolSize : Mathf.Min(desiredPoolSize, Mathf.Max(1, ResolveSafeMaxVolleyCount()));
+        int growStep = Mathf.Max(1, ResolveSafeMaxVolleyCount());
 
-        if (!SpawnKit.EnsurePoolCapacity(bulletSpawnable, desiredPoolSize, prewarmCount, growStep, allowGrow: true))
+        if (!SpawnKit.EnsurePoolCapacity(
+                bulletSpawnable,
+                desiredPoolSize,
+                prewarmCount,
+                growStep,
+                allowGrow: false))
             return;
 
         _preparedPoolSize = desiredPoolSize;
     }
 
+    private int ResolveSafeMaxVolleyCount()
+    {
+        int safeMaxVolley = maxBulletsPerVolley > 0
+            ? Mathf.Min(maxBulletsPerVolley, maxActiveBullets)
+            : Mathf.Max(1, maxActiveBullets);
+
+        if (clampVolleyToSustainableCadence)
+            safeMaxVolley = Mathf.Min(safeMaxVolley, ResolveSustainableVolleyCount());
+
+        return Mathf.Max(1, safeMaxVolley);
+    }
+
+    private int ResolveSustainableVolleyCount()
+    {
+        if (maxActiveBullets <= 0)
+            return 0;
+
+        float safeInterval = Mathf.Max(0.01f, fireInterval);
+        float safeLifetime = Mathf.Max(0.01f, bulletLifetime);
+        int concurrentVolleyCount = Mathf.Max(1, Mathf.CeilToInt(safeLifetime / safeInterval));
+        return Mathf.Max(1, maxActiveBullets / concurrentVolleyCount);
+    }
+
+    private void ScheduleNextFireTime()
+    {
+        float now = Time.time;
+        if (_nextFireTime <= 0f)
+        {
+            _nextFireTime = now + fireInterval;
+            return;
+        }
+
+        _nextFireTime += fireInterval;
+        if (_nextFireTime < now)
+            _nextFireTime = now;
+    }
+
     private Transform ResolveSpawnParent()
     {
         return bulletParent != null ? bulletParent : transform;
+    }
+
+    private SpawnManager ResolveSpawnManager()
+    {
+        if (_cachedSpawnManager != null)
+            return _cachedSpawnManager;
+
+        _cachedSpawnManager = SpawnManager.Instance != null
+            ? SpawnManager.Instance
+            : FindAnyObjectByType<SpawnManager>();
+        return _cachedSpawnManager;
     }
 
     private Collider ResolveHomeCollider()
@@ -401,30 +627,287 @@ public sealed class BulletSpawner : MonoBehaviour
             homeCollider = colliders[0];
     }
 
-    private int BuildSpawnVolumeSet(Collider fallbackCollider)
+    private void AutoAssignBulletSpawnAreaCollider()
     {
-        EnsureRuntimeCaches();
-
-        int count = 0;
-        if (bulletSpawnVolumes != null && bulletSpawnVolumes.Length > 0)
+        if (bulletSpawnAreaCollider != null)
         {
-            EnsureSpawnVolumeBuffer(bulletSpawnVolumes.Length);
+            CacheSpawnAreaShape();
+            return;
+        }
 
-            for (int i = 0; i < bulletSpawnVolumes.Length; i++)
+        if (useFormationSpawnColliderAsSpawnArea && teammateGridSource != null)
+        {
+            bulletSpawnAreaCollider = teammateGridSource.GetFormationSpawnCollider();
+            if (bulletSpawnAreaCollider != null)
             {
-                var volume = bulletSpawnVolumes[i];
-                if (volume == null)
-                    continue;
-
-                _resolvedSpawnVolumes[count++] = volume;
+                CacheSpawnAreaShape();
+                return;
             }
         }
 
-        if (count == 0 && fallbackCollider != null)
+        Transform searchRoot = transform.parent != null ? transform.parent : transform;
+        Collider firstEligibleCollider = null;
+        var colliders = searchRoot.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
         {
-            EnsureSpawnVolumeBuffer(1);
-            _resolvedSpawnVolumes[0] = fallbackCollider;
-            count = 1;
+            Collider candidate = colliders[i];
+            if (!IsEligibleSpawnAreaCollider(candidate))
+                continue;
+
+            string candidateName = candidate.name.ToLowerInvariant();
+            if (candidateName.Contains("head") || candidateName.Contains("heat"))
+            {
+                bulletSpawnAreaCollider = candidate;
+                CacheSpawnAreaShape();
+                return;
+            }
+
+            if (firstEligibleCollider == null)
+                firstEligibleCollider = candidate;
+        }
+
+        bulletSpawnAreaCollider = firstEligibleCollider;
+        CacheSpawnAreaShape();
+    }
+
+    private void EnsureHomeTriggerRelays()
+    {
+        Collider resolvedHomeCollider = ResolveHomeCollider();
+        if (resolvedHomeCollider == null)
+            return;
+
+        RegisterHomeTriggerRelay(resolvedHomeCollider);
+
+        var colliders = resolvedHomeCollider.transform.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            var candidate = colliders[i];
+            RegisterHomeTriggerRelay(candidate);
+        }
+    }
+
+    private void ReleaseHomeTriggerRelays()
+    {
+        Collider resolvedHomeCollider = ResolveHomeCollider();
+        if (resolvedHomeCollider == null)
+            return;
+
+        UnregisterHomeTriggerRelay(resolvedHomeCollider);
+
+        var colliders = resolvedHomeCollider.transform.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            UnregisterHomeTriggerRelay(colliders[i]);
+        }
+    }
+
+    private void RegisterHomeTriggerRelay(Collider candidate)
+    {
+        if (candidate == null || candidate.gameObject == gameObject)
+            return;
+
+        if (!IsManagedHomeCollider(candidate))
+            return;
+
+        if (!candidate.TryGetComponent(out BulletSpawnerHomeRelay relay))
+            relay = candidate.gameObject.AddComponent<BulletSpawnerHomeRelay>();
+
+        relay.Register(this, candidate);
+    }
+
+    private void UnregisterHomeTriggerRelay(Collider candidate)
+    {
+        if (candidate == null || candidate.gameObject == gameObject)
+            return;
+
+        if (!candidate.TryGetComponent(out BulletSpawnerHomeRelay relay))
+            return;
+
+        relay.Unregister(this, candidate);
+    }
+
+    private void RefreshHomeOccupants()
+    {
+        _playersInsideHome.Clear();
+
+        Collider resolvedHomeCollider = ResolveHomeCollider();
+        if (resolvedHomeCollider == null
+            || !resolvedHomeCollider.enabled
+            || !resolvedHomeCollider.gameObject.activeInHierarchy)
+            return;
+
+        EnsureHomeOverlapBuffer(8);
+        Physics.SyncTransforms();
+
+        int overlapCount = CollectHomeOverlaps(resolvedHomeCollider);
+        if (overlapCount >= _homeOverlapBuffer.Length)
+        {
+            EnsureHomeOverlapBuffer(_homeOverlapBuffer.Length * 2);
+            overlapCount = CollectHomeOverlaps(resolvedHomeCollider);
+        }
+
+        for (int i = 0; i < overlapCount; i++)
+        {
+            HandleHomeTriggerEnter(_homeOverlapBuffer[i]);
+            _homeOverlapBuffer[i] = null;
+        }
+    }
+
+    private void ValidateTrackedPlayersInsideHome()
+    {
+        if (_playersInsideHome.Count <= 0)
+            return;
+
+        _playersPendingRemoval.Clear();
+
+        foreach (var entry in _playersInsideHome)
+        {
+            if (IsPlayerRootInsideHome(entry.Value))
+                continue;
+
+            _playersPendingRemoval.Add(entry.Key);
+        }
+
+        for (int i = 0; i < _playersPendingRemoval.Count; i++)
+        {
+            _playersInsideHome.Remove(_playersPendingRemoval[i]);
+        }
+    }
+
+    private void RefreshTrackedPlayerState(Transform playerRoot)
+    {
+        if (playerRoot == null)
+            return;
+
+        EntityId playerId = playerRoot.gameObject.GetEntityId();
+        if (IsPlayerRootInsideHome(playerRoot))
+        {
+            _playersInsideHome[playerId] = playerRoot;
+            return;
+        }
+
+        _playersInsideHome.Remove(playerId);
+    }
+
+    private bool IsPlayerRootInsideHome(Transform playerRoot)
+    {
+        Collider resolvedHomeCollider = ResolveHomeCollider();
+        if (resolvedHomeCollider == null || playerRoot == null || !playerRoot.gameObject.activeInHierarchy)
+            return false;
+
+        Collider playerCollider = ResolvePrimaryPlayerCollider(playerRoot);
+        if (playerCollider == null)
+            return resolvedHomeCollider.bounds.Contains(playerRoot.position);
+
+        return Physics.ComputePenetration(
+            resolvedHomeCollider,
+            resolvedHomeCollider.transform.position,
+            resolvedHomeCollider.transform.rotation,
+            playerCollider,
+            playerCollider.transform.position,
+            playerCollider.transform.rotation,
+            out _,
+            out _);
+    }
+
+    private int CollectHomeOverlaps(Collider sourceCollider)
+    {
+        Bounds bounds = sourceCollider.bounds;
+        Vector3 halfExtents = bounds.extents;
+        halfExtents.x = Mathf.Max(halfExtents.x, 0.01f);
+        halfExtents.y = Mathf.Max(halfExtents.y, 0.01f);
+        halfExtents.z = Mathf.Max(halfExtents.z, 0.01f);
+
+        return Physics.OverlapBoxNonAlloc(
+            bounds.center,
+            halfExtents,
+            _homeOverlapBuffer,
+            Quaternion.identity,
+            Physics.AllLayers,
+            QueryTriggerInteraction.Collide);
+    }
+
+    private bool IsManagedHomeCollider(Collider candidate)
+    {
+        if (candidate == null)
+            return false;
+
+        if (candidate == homeCollider)
+            return true;
+
+        if (candidate.CompareTag(HomeTag))
+            return true;
+
+        return homeCollider != null && candidate.transform.IsChildOf(homeCollider.transform);
+    }
+
+    private Collider ResolveBulletSpawnAreaCollider()
+    {
+        if (bulletSpawnAreaCollider == null)
+            AutoAssignBulletSpawnAreaCollider();
+
+        CacheSpawnAreaShape();
+        return bulletSpawnAreaCollider;
+    }
+
+    private void CacheSpawnAreaShape()
+    {
+        if (!(bulletSpawnAreaCollider is BoxCollider boxCollider))
+        {
+            _cachedSpawnAreaBoxCollider = null;
+            _lastSpawnAreaTeammateCount = -1;
+            return;
+        }
+
+        if (_cachedSpawnAreaBoxCollider == boxCollider)
+            return;
+
+        _cachedSpawnAreaBoxCollider = boxCollider;
+        _spawnAreaBaseSize = boxCollider.size;
+        _spawnAreaBaseCenter = boxCollider.center;
+        _lastSpawnAreaTeammateCount = -1;
+    }
+
+    private void UpdateSpawnAreaSize(int teammateCount)
+    {
+        Collider spawnAreaCollider = ResolveBulletSpawnAreaCollider();
+        if (!(spawnAreaCollider is BoxCollider boxCollider))
+            return;
+
+        CacheSpawnAreaShape();
+        if (_cachedSpawnAreaBoxCollider != boxCollider || teammateCount == _lastSpawnAreaTeammateCount)
+            return;
+
+        boxCollider.center = _spawnAreaBaseCenter;
+        boxCollider.size = new Vector3(
+            ResolveScaledSpawnAxis(_spawnAreaBaseSize.x, spawnAreaWidthPerTeammate, maxSpawnAreaWidth, teammateCount),
+            ResolveScaledSpawnAxis(_spawnAreaBaseSize.y, spawnAreaHeightPerTeammate, maxSpawnAreaHeight, teammateCount),
+            _spawnAreaBaseSize.z);
+
+        _lastSpawnAreaTeammateCount = teammateCount;
+    }
+
+    private int BuildMuzzleSet()
+    {
+        EnsureMuzzleBuffer(Mathf.Max(1, muzzles != null ? muzzles.Length : 1));
+
+        int count = 0;
+        if (muzzles != null && muzzles.Length > 0)
+        {
+            for (int i = 0; i < muzzles.Length; i++)
+            {
+                Transform muzzle = muzzles[i];
+                if (muzzle == null)
+                    continue;
+
+                _resolvedMuzzles[count++] = muzzle;
+            }
+        }
+
+        if (count == 0)
+        {
+            _resolvedMuzzles[0] = ResolveSpawnParent();
+            count = _resolvedMuzzles[0] != null ? 1 : 0;
         }
 
         return count;
@@ -432,109 +915,95 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private void EnsureRuntimeCaches()
     {
-        if (_spawnAlgorithm == null)
-            _spawnAlgorithm = new RuntimeMultiColliderVolumeAlgorithm();
-
-        EnsureSpawnVolumeBuffer(Mathf.Max(1, bulletSpawnVolumes != null ? bulletSpawnVolumes.Length : 1));
-        EnsurePlayerOverlapBuffer();
+        AutoAssignBulletSpawnAreaCollider();
+        EnsureMuzzleBuffer(Mathf.Max(1, muzzles != null ? muzzles.Length : 1));
+        EnsureHitBuffer();
     }
 
-    private void EnsureSpawnVolumeBuffer(int requiredSize)
+    private void EnsureMuzzleBuffer(int requiredSize)
     {
         requiredSize = Mathf.Max(1, requiredSize);
-
-        if (_resolvedSpawnVolumes.Length >= requiredSize)
+        if (_resolvedMuzzles.Length >= requiredSize)
             return;
 
-        _resolvedSpawnVolumes = new Collider[requiredSize];
+        _resolvedMuzzles = new Transform[requiredSize];
     }
 
-    private void EnsurePlayerOverlapBuffer()
+    private void EnsureHitBuffer()
     {
-        int desiredSize = Mathf.Max(1, overlapBufferSize);
-
-        if (_playerOverlapBuffer.Length == desiredSize)
+        int desiredSize = Mathf.Max(1, hitBufferSize);
+        if (_hitBuffer.Length == desiredSize)
             return;
 
-        _playerOverlapBuffer = new Collider[desiredSize];
+        _hitBuffer = new RaycastHit[desiredSize];
     }
 
-    private int ResolvePlayerDetectionLayerMask()
+    private void EnsureHomeOverlapBuffer(int requiredSize)
     {
-        return playerDetectionLayers.value != 0 ? playerDetectionLayers.value : Physics.AllLayers;
+        requiredSize = Mathf.Max(1, requiredSize);
+        if (_homeOverlapBuffer.Length >= requiredSize)
+            return;
+
+        _homeOverlapBuffer = new Collider[requiredSize];
     }
 
-    private bool HasSpawnManager()
+    private int ResolveTargetLayerMask()
     {
-        return SpawnManager.Instance != null || FindAnyObjectByType<SpawnManager>() != null;
+        return targetLayers.value != 0 ? targetLayers.value : Physics.AllLayers;
     }
 
-    private static bool HasTagInHierarchy(Collider other, string requiredTag)
+    private static Transform ResolveTaggedTransform(Collider other, string requiredTag)
     {
         if (other == null)
-            return false;
+            return null;
 
         if (other.CompareTag(requiredTag))
-            return true;
+            return other.transform;
 
         var attachedRigidbody = other.attachedRigidbody;
         if (attachedRigidbody != null && attachedRigidbody.CompareTag(requiredTag))
-            return true;
+            return attachedRigidbody.transform;
+
+        Transform current = other.transform;
+        while (current != null)
+        {
+            if (current.CompareTag(requiredTag))
+                return current;
+
+            current = current.parent;
+        }
 
         Transform root = other.transform.root;
-        return root != null && root.CompareTag(requiredTag);
+        return root != null && root.CompareTag(requiredTag) ? root : null;
     }
 
-    private static Vector3 Abs(Vector3 value)
+    private static Collider ResolvePrimaryPlayerCollider(Transform playerRoot)
     {
-        return new Vector3(
-            Mathf.Abs(value.x),
-            Mathf.Abs(value.y),
-            Mathf.Abs(value.z));
+        if (playerRoot == null)
+            return null;
+
+        if (playerRoot.TryGetComponent(out Collider rootCollider))
+            return rootCollider;
+
+        return playerRoot.GetComponentInChildren<Collider>(true);
     }
 
-    private static float MaxAbs(Vector3 value)
+    private bool IsEligibleSpawnAreaCollider(Collider candidate)
     {
-        return Mathf.Max(Mathf.Abs(value.x), Mathf.Abs(value.y), Mathf.Abs(value.z));
+        return candidate != null
+               && candidate != homeCollider
+               && candidate.enabled
+               && !candidate.isTrigger
+               && candidate.gameObject != gameObject;
     }
 
-    private static Vector3 ResolveCapsuleDirection(Transform targetTransform, int direction)
+    private static float ResolveScaledSpawnAxis(float baseValue, float perTeammate, float maxValue, int teammateCount)
     {
-        switch (direction)
-        {
-            case 0:
-                return targetTransform.right;
-            case 1:
-                return targetTransform.up;
-            default:
-                return targetTransform.forward;
-        }
-    }
+        float value = baseValue + Mathf.Max(0, teammateCount - 1) * perTeammate;
+        if (maxValue > 0f)
+            value = Mathf.Min(value, Mathf.Max(baseValue, maxValue));
 
-    private static float ResolveCapsuleRadiusScale(Vector3 lossyScale, int direction)
-    {
-        switch (direction)
-        {
-            case 0:
-                return Mathf.Max(lossyScale.y, lossyScale.z);
-            case 1:
-                return Mathf.Max(lossyScale.x, lossyScale.z);
-            default:
-                return Mathf.Max(lossyScale.x, lossyScale.y);
-        }
-    }
-
-    private static float ResolveCapsuleHeightScale(Vector3 lossyScale, int direction)
-    {
-        switch (direction)
-        {
-            case 0:
-                return lossyScale.x;
-            case 1:
-                return lossyScale.y;
-            default:
-                return lossyScale.z;
-        }
+        return Mathf.Max(0.01f, value);
     }
 
     private static int MultiplyClamped(int value, int multiplier)
@@ -555,208 +1024,152 @@ public sealed class BulletSpawner : MonoBehaviour
         Debug.LogWarning(message, this);
     }
 
-    private sealed class RuntimeMultiColliderVolumeAlgorithm : ISpawnAlgorithm, ISpawnBatchReset
+    private sealed class BulletSpawnPoseAlgorithm : ISpawnAlgorithm
     {
-        private Collider[] _colliders = System.Array.Empty<Collider>();
-        private float[] _weights = System.Array.Empty<float>();
-        private Vector3[] _placed = System.Array.Empty<Vector3>();
-
-        private int _colliderCount;
-        private int _placedCount;
-        private int _maxTryPerPoint;
-        private int _candidatesPerPoint;
-        private float _minDistance;
-        private float _minDistanceSqr;
-        private float _weightSum;
+        private Collider _spawnAreaCollider;
+        private int _spawnCount;
+        private Transform[] _muzzles = System.Array.Empty<Transform>();
+        private int _muzzleCount;
         private Vector3 _fallbackPosition;
 
         public void Configure(
-            Collider[] colliders,
-            int colliderCount,
-            Vector3 fallbackPosition,
-            int maxTryPerPoint,
-            int candidatesPerPoint,
-            float minDistance,
-            int maxCount)
+            Collider spawnAreaCollider,
+            int spawnCount,
+            Transform[] muzzles,
+            int muzzleCount,
+            Vector3 fallbackPosition)
         {
+            _spawnAreaCollider = spawnAreaCollider;
+            _spawnCount = Mathf.Max(1, spawnCount);
+            _muzzles = muzzles ?? System.Array.Empty<Transform>();
+            _muzzleCount = Mathf.Max(0, muzzleCount);
             _fallbackPosition = fallbackPosition;
-            _maxTryPerPoint = Mathf.Max(1, maxTryPerPoint);
-            _candidatesPerPoint = Mathf.Max(1, candidatesPerPoint);
-            _minDistance = Mathf.Max(0f, minDistance);
-            _minDistanceSqr = _minDistance * _minDistance;
-
-            EnsureColliderCapacity(Mathf.Max(1, colliderCount));
-
-            _colliderCount = 0;
-            _weightSum = 0f;
-
-            for (int i = 0; i < colliderCount; i++)
-            {
-                var collider = colliders[i];
-                if (collider == null)
-                    continue;
-
-                _colliders[_colliderCount] = collider;
-
-                float weight = EstimateBoundsWeight(collider.bounds);
-                _weights[_colliderCount] = weight;
-                _weightSum += weight;
-                _colliderCount++;
-            }
-
-            if (_colliderCount > 0)
-                _fallbackPosition = _colliders[0].bounds.center;
-
-            EnsurePlacedCapacity(Mathf.Max(1, maxCount));
-            _placedCount = 0;
-        }
-
-        public void ResetPlaced()
-        {
-            _placedCount = 0;
         }
 
         public void GetPose(int index, uint seed, out Vector3 position, out Quaternion rotation)
         {
             rotation = Quaternion.identity;
+
+            if (TryGetSpawnAreaPose(index, out position))
+                return;
+
+            if (_muzzleCount <= 0)
+            {
+                position = _fallbackPosition;
+                return;
+            }
+
+            Transform muzzle = _muzzles[index % _muzzleCount];
+            if (muzzle == null)
+            {
+                position = _fallbackPosition;
+                return;
+            }
+
+            position = muzzle.position;
+        }
+
+        private bool TryGetSpawnAreaPose(int index, out Vector3 position)
+        {
             position = _fallbackPosition;
+            if (_spawnAreaCollider == null)
+                return false;
 
-            if (_colliderCount <= 0 || _placed.Length <= 0)
-                return;
-
-            uint state = Hash((uint)(index + 1) ^ seed);
-            Vector3 best = position;
-            float bestScore = -1f;
-            int totalTries = _maxTryPerPoint;
-
-            while (totalTries-- > 0)
+            if (_spawnAreaCollider is BoxCollider boxCollider)
             {
-                for (int candidateIndex = 0; candidateIndex < _candidatesPerPoint; candidateIndex++)
-                {
-                    var collider = PickCollider(ref state);
-                    if (collider == null)
-                        continue;
-
-                    Vector3 sample = SampleInsideBounds(ref state, collider.bounds);
-                    Vector3 closestPoint = collider.ClosestPoint(sample);
-                    if ((closestPoint - sample).sqrMagnitude > 1e-6f)
-                        continue;
-
-                    float nearestSqr = float.PositiveInfinity;
-                    for (int placedIndex = 0; placedIndex < _placedCount; placedIndex++)
-                    {
-                        float distanceSqr = (sample - _placed[placedIndex]).sqrMagnitude;
-                        if (distanceSqr < nearestSqr)
-                            nearestSqr = distanceSqr;
-
-                        if (_minDistance > 0f && nearestSqr < _minDistanceSqr)
-                            break;
-                    }
-
-                    if (_placedCount == 0)
-                    {
-                        best = sample;
-                        bestScore = float.PositiveInfinity;
-                        goto Accept;
-                    }
-
-                    if (_minDistance > 0f && nearestSqr < _minDistanceSqr)
-                        continue;
-
-                    if (nearestSqr > bestScore)
-                    {
-                        bestScore = nearestSqr;
-                        best = sample;
-                    }
-                }
-
-                if (bestScore >= 0f)
-                    break;
+                position = ResolveBoxColliderFacePosition(boxCollider, index, _spawnCount);
+                return true;
             }
 
-        Accept:
-            position = best;
-
-            if (_placedCount < _placed.Length)
-                _placed[_placedCount++] = best;
+            Bounds bounds = _spawnAreaCollider.bounds;
+            position = ResolveBoundsFacePosition(bounds, index, _spawnCount);
+            return true;
         }
 
-        private Collider PickCollider(ref uint state)
+        private static Vector3 ResolveBoxColliderFacePosition(BoxCollider boxCollider, int index, int spawnCount)
         {
-            if (_colliderCount <= 0)
-                return null;
+            Vector3 localPoint = ResolveFaceLocalPoint(
+                boxCollider.center,
+                boxCollider.size.x,
+                boxCollider.size.y,
+                boxCollider.size.z,
+                index,
+                spawnCount);
 
-            if (_colliderCount == 1 || _weightSum <= 0f)
-                return _colliders[0];
-
-            float pick = To01(Next(ref state)) * _weightSum;
-            float cumulative = 0f;
-
-            for (int i = 0; i < _colliderCount; i++)
-            {
-                cumulative += _weights[i];
-                if (pick <= cumulative)
-                    return _colliders[i];
-            }
-
-            return _colliders[_colliderCount - 1];
+            return boxCollider.transform.TransformPoint(localPoint);
         }
 
-        private void EnsureColliderCapacity(int requiredSize)
+        private static Vector3 ResolveBoundsFacePosition(Bounds bounds, int index, int spawnCount)
         {
-            if (_colliders.Length < requiredSize)
-                _colliders = new Collider[requiredSize];
+            ResolveGridCoordinates(index, spawnCount, bounds.size.x, bounds.size.y, out int row, out int column, out int columnsInRow, out int rowCount);
 
-            if (_weights.Length < requiredSize)
-                _weights = new float[requiredSize];
-        }
-
-        private void EnsurePlacedCapacity(int requiredSize)
-        {
-            if (_placed.Length >= requiredSize)
-                return;
-
-            _placed = new Vector3[requiredSize];
-        }
-
-        private static float EstimateBoundsWeight(Bounds bounds)
-        {
-            Vector3 size = bounds.size;
-            float volume = Mathf.Abs(size.x * size.y * size.z);
-            return volume > 1e-6f ? volume : 1f;
-        }
-
-        private static Vector3 SampleInsideBounds(ref uint state, Bounds bounds)
-        {
-            float rx = To01(Next(ref state));
-            float ry = To01(Next(ref state));
-            float rz = To01(Next(ref state));
+            float x = ResolveAxisOffset(column, columnsInRow, bounds.size.x);
+            float y = ResolveVerticalOffset(row, rowCount, bounds.size.y);
 
             return new Vector3(
-                Mathf.Lerp(bounds.min.x, bounds.max.x, rx),
-                Mathf.Lerp(bounds.min.y, bounds.max.y, ry),
-                Mathf.Lerp(bounds.min.z, bounds.max.z, rz));
+                bounds.center.x + x,
+                bounds.center.y + y,
+                bounds.max.z);
         }
 
-        private static uint Next(ref uint state)
+        private static Vector3 ResolveFaceLocalPoint(
+            Vector3 localCenter,
+            float width,
+            float height,
+            float depth,
+            int index,
+            int spawnCount)
         {
-            state = state * 1664525u + 1013904223u;
-            return state;
+            ResolveGridCoordinates(index, spawnCount, width, height, out int row, out int column, out int columnsInRow, out int rowCount);
+
+            return localCenter + new Vector3(
+                ResolveAxisOffset(column, columnsInRow, width),
+                ResolveVerticalOffset(row, rowCount, height),
+                depth * 0.5f);
         }
 
-        private static float To01(uint value)
+        private static void ResolveGridCoordinates(
+            int index,
+            int spawnCount,
+            float width,
+            float height,
+            out int row,
+            out int column,
+            out int columnsInRow,
+            out int rowCount)
         {
-            return (value >> 8) * (1f / 16777216f);
+            float safeWidth = Mathf.Max(width, 0.01f);
+            float safeHeight = Mathf.Max(height, 0.01f);
+            float aspect = safeWidth / safeHeight;
+
+            int columnCount = Mathf.Max(1, Mathf.CeilToInt(Mathf.Sqrt(spawnCount * aspect)));
+            rowCount = Mathf.Max(1, Mathf.CeilToInt(spawnCount / (float)columnCount));
+
+            row = Mathf.Clamp(index / columnCount, 0, rowCount - 1);
+            bool isLastRow = row == rowCount - 1;
+            int remainder = spawnCount % columnCount;
+            columnsInRow = isLastRow && remainder > 0 ? remainder : columnCount;
+
+            int rowStartIndex = row * columnCount;
+            column = Mathf.Clamp(index - rowStartIndex, 0, Mathf.Max(0, columnsInRow - 1));
         }
 
-        private static uint Hash(uint value)
+        private static float ResolveAxisOffset(int index, int count, float extent)
         {
-            value ^= value >> 16;
-            value *= 0x7feb352du;
-            value ^= value >> 15;
-            value *= 0x846ca68bu;
-            value ^= value >> 16;
-            return value == 0 ? 1u : value;
+            if (count <= 1)
+                return 0f;
+
+            float step = extent / count;
+            return -extent * 0.5f + step * (index + 0.5f);
+        }
+
+        private static float ResolveVerticalOffset(int row, int rowCount, float extent)
+        {
+            if (rowCount <= 1)
+                return 0f;
+
+            float step = extent / rowCount;
+            return extent * 0.5f - step * (row + 0.5f);
         }
     }
 }

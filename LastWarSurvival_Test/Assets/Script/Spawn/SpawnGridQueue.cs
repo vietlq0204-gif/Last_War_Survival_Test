@@ -103,6 +103,16 @@ public class SpawnGridQueue : CoreEventBase
         return gridZone != null ? gridZone.OccupiedSlotCount : 0;
     }
 
+    public virtual Collider GetFormationSpawnCollider()
+    {
+        return formationSpawnCollider;
+    }
+
+    public virtual Transform GetFormationSpawnTransform()
+    {
+        return formationSpawnTransform;
+    }
+
     private IEnumerator SpawnRoutine()
     {
         while (_pendingSpawnCount > 0)
