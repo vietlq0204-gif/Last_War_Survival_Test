@@ -368,7 +368,7 @@ public sealed class BulletSpawner : MonoBehaviour
             runtime.remainingLifetime -= deltaTime;
             if (runtime.remainingLifetime <= 0f)
             {
-                DespawnRuntimeBullet(runtime);
+                QueueRuntimeBulletDespawn(runtime);
                 RemoveActiveBulletAt(i);
                 continue;
             }
@@ -380,10 +380,13 @@ public sealed class BulletSpawner : MonoBehaviour
                 continue;
             }
 
-            if (TryResolveEnemyHit(runtime.position, stepDistance, runtime.hitRadius, layerMask, out Vector3 hitPoint))
+            if (TryResolveEnemyHit(runtime.position, stepDistance, runtime.hitRadius, layerMask, out Enemy hitEnemy, out Vector3 hitPoint))
             {
+                if (hitEnemy != null)
+                    hitEnemy.ApplyDamage(runtime.bullet.Damage);
+
                 runtime.bullet.SetWorldPosition(hitPoint);
-                DespawnRuntimeBullet(runtime);
+                QueueRuntimeBulletDespawn(runtime);
                 RemoveActiveBulletAt(i);
                 continue;
             }
@@ -399,8 +402,10 @@ public sealed class BulletSpawner : MonoBehaviour
         float distance,
         float hitRadius,
         int layerMask,
+        out Enemy hitEnemy,
         out Vector3 hitPoint)
     {
+        hitEnemy = null;
         hitPoint = origin + BulletDirection * distance;
         int hitCount = hitRadius > 0f
             ? Physics.SphereCastNonAlloc(
@@ -429,7 +434,8 @@ public sealed class BulletSpawner : MonoBehaviour
         {
             RaycastHit hit = _hitBuffer[i];
             Collider hitCollider = hit.collider;
-            if (ResolveTaggedTransform(hitCollider, EnemyTag) == null)
+            Enemy resolvedEnemy = ResolveEnemyFromCollider(hitCollider);
+            if (resolvedEnemy == null || !resolvedEnemy.IsAlive)
                 continue;
 
             if (hit.distance >= nearestDistance)
@@ -437,6 +443,7 @@ public sealed class BulletSpawner : MonoBehaviour
 
             nearestDistance = hit.distance;
             hitPoint = hit.point;
+            hitEnemy = resolvedEnemy;
             foundEnemy = true;
         }
 
@@ -450,7 +457,16 @@ public sealed class BulletSpawner : MonoBehaviour
                && runtime.bullet.gameObject.activeInHierarchy;
     }
 
-    private void DespawnRuntimeBullet(ActiveBulletRuntime runtime)
+    private void QueueRuntimeBulletDespawn(ActiveBulletRuntime runtime)
+    {
+        if (runtime.bullet == null)
+            return;
+
+        runtime.bullet.BeginQueuedDespawn();
+        BufferedPoolDespawnQueue.Queue(runtime.bullet);
+    }
+
+    private static void ForceDespawnRuntimeBullet(ActiveBulletRuntime runtime)
     {
         if (runtime.bullet == null)
             return;
@@ -462,7 +478,7 @@ public sealed class BulletSpawner : MonoBehaviour
     {
         for (int i = _activeBullets.Count - 1; i >= 0; i--)
         {
-            DespawnRuntimeBullet(_activeBullets[i]);
+            ForceDespawnRuntimeBullet(_activeBullets[i]);
         }
 
         _activeBullets.Clear();
@@ -975,6 +991,19 @@ public sealed class BulletSpawner : MonoBehaviour
 
         Transform root = other.transform.root;
         return root != null && root.CompareTag(requiredTag) ? root : null;
+    }
+
+    private static Enemy ResolveEnemyFromCollider(Collider other)
+    {
+        if (other == null)
+            return null;
+
+        Enemy enemy = other.GetComponentInParent<Enemy>();
+        if (enemy != null)
+            return enemy;
+
+        Transform enemyRoot = ResolveTaggedTransform(other, EnemyTag);
+        return enemyRoot != null ? enemyRoot.GetComponentInParent<Enemy>() : null;
     }
 
     private static Collider ResolvePrimaryPlayerCollider(Transform playerRoot)

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using Vit.SpawnKit.Components;
 
@@ -21,6 +22,9 @@ public class EnemySpawner : SpawnGridQueue
 
     private ColliderSurfaceGridZone _cachedGridZone;
     private Collider[] _overlapBuffer;
+    private readonly HashSet<EntityId> _aliveEnemyIds = new HashSet<EntityId>();
+    private EnemyGridGroup _owningGroup;
+    private bool _hasPendingEmptyRecycleRequest;
 
     private void OnValidate()
     {
@@ -36,6 +40,13 @@ public class EnemySpawner : SpawnGridQueue
 
         if (fillAvailableSlotsOnStart)
             FillAvailableSlots();
+    }
+
+    protected override void OnDisable()
+    {
+        base.OnDisable();
+        _aliveEnemyIds.Clear();
+        _hasPendingEmptyRecycleRequest = false;
     }
 
     public bool FillAvailableSlots()
@@ -58,6 +69,9 @@ public class EnemySpawner : SpawnGridQueue
 
     public bool HasSpawnedObjectsInside()
     {
+        if (_aliveEnemyIds.Count > 0)
+            return true;
+
         if (HasSpawnedChildren())
             return true;
 
@@ -86,10 +100,33 @@ public class EnemySpawner : SpawnGridQueue
             if (spawnedObject is EnemyGridGroup)
                 continue;
 
+            if (spawnedObject is Enemy enemy && !enemy.IsAlive)
+                continue;
+
             return true;
         }
 
         return false;
+    }
+
+    public void RegisterSpawnedEnemy(Enemy enemy)
+    {
+        if (enemy == null)
+            return;
+
+        _aliveEnemyIds.Add(enemy.CachedEntityId);
+        _hasPendingEmptyRecycleRequest = false;
+    }
+
+    public void NotifyEnemyDefeated(Enemy enemy)
+    {
+        RemoveTrackedEnemy(enemy);
+        TryRequestImmediateRecycleWhenEmpty();
+    }
+
+    public void NotifyEnemyDespawned(Enemy enemy)
+    {
+        RemoveTrackedEnemy(enemy);
     }
 
     public bool Intersects(Collider other)
@@ -129,6 +166,38 @@ public class EnemySpawner : SpawnGridQueue
         return occupancyCollider;
     }
 
+    private void RemoveTrackedEnemy(Enemy enemy)
+    {
+        if (enemy == null)
+            return;
+
+        _aliveEnemyIds.Remove(enemy.CachedEntityId);
+    }
+
+    private void TryRequestImmediateRecycleWhenEmpty()
+    {
+        if (_aliveEnemyIds.Count > 0 || _hasPendingEmptyRecycleRequest)
+            return;
+
+        EnemyGridGroup owningGroup = ResolveOwningGroup();
+        if (owningGroup == null)
+            return;
+
+        if (!owningGroup.RequestImmediateRecycle(this))
+            return;
+
+        _hasPendingEmptyRecycleRequest = true;
+    }
+
+    private EnemyGridGroup ResolveOwningGroup()
+    {
+        if (_owningGroup != null)
+            return _owningGroup;
+
+        _owningGroup = GetComponentInParent<EnemyGridGroup>();
+        return _owningGroup;
+    }
+
     private void EnsureOverlapBuffer()
     {
         int desiredBufferSize = Mathf.Max(1, overlapBufferSize);
@@ -153,6 +222,9 @@ public class EnemySpawner : SpawnGridQueue
                 continue;
 
             if (spawnedObject is EnemyGridGroup)
+                continue;
+
+            if (spawnedObject is Enemy enemy && !enemy.IsAlive)
                 continue;
 
             return true;

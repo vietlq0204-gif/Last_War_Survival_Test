@@ -9,6 +9,8 @@ public sealed class Bullet : ObjectSpawned
 
     private Transform _visualTransform;
     private TrailRenderer[] _trailRenderers;
+    private Renderer[] _cachedRenderers;
+    private bool[] _defaultRendererStates;
 
     public BulletSO BulletData => bulletData;
     public int Damage => bulletData != null ? bulletData.Damage : 0;
@@ -20,17 +22,21 @@ public sealed class Bullet : ObjectSpawned
         base.Awake();
         _visualTransform = CachedTransform != null ? CachedTransform : transform;
         _trailRenderers = GetComponentsInChildren<TrailRenderer>(true);
+        CacheRenderers();
     }
 
     public override void OnSpawnedFromPool()
     {
         base.OnSpawnedFromPool();
         ResetVisualState();
+        SetRenderersVisible(true);
+        SetControlledCollisionEnabled(true);
     }
 
     public override void OnDespawnedToPool()
     {
         ResetVisualState();
+        SetRenderersVisible(true);
         base.OnDespawnedToPool();
     }
 
@@ -48,6 +54,12 @@ public sealed class Bullet : ObjectSpawned
         _visualTransform.position = position;
     }
 
+    public void BeginQueuedDespawn()
+    {
+        SetControlledCollisionEnabled(false);
+        SetRenderersVisible(false);
+    }
+
     private void ResetVisualState()
     {
         if (_trailRenderers == null)
@@ -56,6 +68,32 @@ public sealed class Bullet : ObjectSpawned
         for (int i = 0; i < _trailRenderers.Length; i++)
         {
             _trailRenderers[i]?.Clear();
+        }
+    }
+
+    private void CacheRenderers()
+    {
+        _cachedRenderers = GetComponentsInChildren<Renderer>(true);
+        _defaultRendererStates = new bool[_cachedRenderers.Length];
+
+        for (int i = 0; i < _cachedRenderers.Length; i++)
+        {
+            _defaultRendererStates[i] = _cachedRenderers[i] != null && _cachedRenderers[i].enabled;
+        }
+    }
+
+    private void SetRenderersVisible(bool isVisible)
+    {
+        if (_cachedRenderers == null || _defaultRendererStates == null)
+            return;
+
+        for (int i = 0; i < _cachedRenderers.Length; i++)
+        {
+            Renderer cachedRenderer = _cachedRenderers[i];
+            if (cachedRenderer == null)
+                continue;
+
+            cachedRenderer.enabled = isVisible && _defaultRendererStates[i];
         }
     }
 }

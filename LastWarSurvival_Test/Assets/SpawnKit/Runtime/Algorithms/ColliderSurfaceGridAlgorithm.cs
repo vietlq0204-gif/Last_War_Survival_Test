@@ -754,6 +754,11 @@ public sealed class SpawnGridSlotReservation : MonoBehaviour, ISpawnPoolCallback
         return _isBound && _owner == owner && _slotKey == slotKey;
     }
 
+    public void ReleaseReservationNow()
+    {
+        ReleaseReservation();
+    }
+
     public void OnSpawnedFromPool()
     {
     }

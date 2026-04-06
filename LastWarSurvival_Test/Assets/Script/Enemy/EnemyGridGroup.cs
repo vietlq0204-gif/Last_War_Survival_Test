@@ -220,6 +220,22 @@ public class EnemyGridGroup : ObjectSpawned
         return GetGridSpacingDistance();
     }
 
+    public bool RequestImmediateRecycle(EnemySpawner grid)
+    {
+        if (grid == null)
+            return false;
+
+        if (_orderedGrids.Count == 0)
+            RebuildGridCache();
+
+        if (!_orderedGrids.Contains(grid) || _pendingRecycleGrids.Contains(grid))
+            return false;
+
+        LogDebug($"Immediate recycle requested for empty grid '{grid.name}'.", grid);
+        RecycleGrid(grid);
+        return true;
+    }
+
     public bool TryBuildPathEntry(
         EnemySpawner grid,
         float initialDistance,

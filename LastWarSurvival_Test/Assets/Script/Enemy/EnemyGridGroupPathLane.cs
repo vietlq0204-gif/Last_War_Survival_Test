@@ -316,6 +316,7 @@ public class EnemyGridGroupPathLane : CoreEventBase
         _entriesBuffer.Clear();
         _entriesBuffer.Add(entry);
         pathController.RegisterSpawnedBatch(_entriesBuffer);
+        pendingSpawn.grid.FillAvailableSlots();
     }
 
     private void RequestNextSpawnWindow(float requiredGap)
