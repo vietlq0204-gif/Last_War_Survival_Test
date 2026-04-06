@@ -1,4 +1,4 @@
-public class SpawnTeammate : SpawnGridQueue
+public class TeammateSpawner : SpawnGridQueue
 {
     protected override string SpawnedObjectLabel => "teammate";
 

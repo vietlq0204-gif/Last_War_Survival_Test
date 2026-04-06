@@ -1,6 +1,9 @@
 using UnityEngine;
 using Vit.SpawnKit.Pooling;
 
+/// <summary>
+/// Gắn lên các object được spawn
+/// </summary>
 public class ObjectSpawned : MonoBehaviour, ISpawnPoolCallbacks
 {
     [SerializeField] private bool disableCollidersWhileControlled = true;
