@@ -10,10 +10,10 @@ using Vit.SpawnKit.ScriptableObjects;
 using Vit.SpawnKit.Services;
 
 /// <summary>
-/// Điều phối luồng spawn teammate cho Player bằng SpawnAsync và grid zone.
+/// Điều phối luồng spawn teammate z bằng SpawnAsync và grid zone.
 /// Hiện tại class này vừa nghe event, vừa quản lý queue, vừa chuẩn bị pool nên vẫn còn gom nhiều trách nhiệm.
 /// </summary>
-public class Player : CoreEventBase
+public class SpawnTeammate : CoreEventBase
 {
     /// <summary>
     /// Preset spawn teammate được dùng để xác định Spawnable, seed và lifecycle override.
