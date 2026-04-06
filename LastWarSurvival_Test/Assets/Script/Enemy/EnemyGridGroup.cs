@@ -30,6 +30,7 @@ public class EnemyGridGroup : ObjectSpawned
     private readonly Dictionary<EnemySpawner, bool> _gridInsideTriggerStates = new Dictionary<EnemySpawner, bool>(8);
     private readonly List<EnemySpawner> _pendingRecycleGrids = new List<EnemySpawner>(4);
     private ObjectOnPathController _pathController;
+    private EnemyGridGroupPathLane _owningLane;
     private float _pathMoveSpeed;
     private float _pathStartDistance;
     private EntityId _pathSpawnZoneId;
@@ -83,7 +84,18 @@ public class EnemyGridGroup : ObjectSpawned
 
     public void ConfigurePathRuntime(ObjectOnPathController controller, float moveSpeed, float startDistance, EntityId spawnZoneId)
     {
+        ConfigurePathRuntime(controller, null, moveSpeed, startDistance, spawnZoneId);
+    }
+
+    public void ConfigurePathRuntime(
+        ObjectOnPathController controller,
+        EnemyGridGroupPathLane owningLane,
+        float moveSpeed,
+        float startDistance,
+        EntityId spawnZoneId)
+    {
         _pathController = controller;
+        _owningLane = owningLane;
         _pathMoveSpeed = Mathf.Max(0.01f, moveSpeed);
         _pathStartDistance = Mathf.Max(0f, startDistance);
         _pathSpawnZoneId = spawnZoneId;
@@ -182,6 +194,53 @@ public class EnemyGridGroup : ObjectSpawned
 
             grid.transform.localPosition = gridLocalOffset * i;
         }
+    }
+
+    public int CopyOrderedGridsTo(List<EnemySpawner> destination)
+    {
+        if (destination == null)
+            return 0;
+
+        if (_orderedGrids.Count == 0)
+            RebuildGridCache();
+
+        destination.Clear();
+        for (int i = 0; i < _orderedGrids.Count; i++)
+        {
+            var grid = _orderedGrids[i];
+            if (grid != null)
+                destination.Add(grid);
+        }
+
+        return destination.Count;
+    }
+
+    public float GetGridSpacingDistanceHint()
+    {
+        return GetGridSpacingDistance();
+    }
+
+    public bool TryBuildPathEntry(
+        EnemySpawner grid,
+        float initialDistance,
+        float moveSpeed,
+        EntityId spawnZoneId,
+        out ObjectSpawnInstruction entry)
+    {
+        entry = default;
+
+        var pathItem = ResolvePathItem(grid);
+        if (pathItem == null)
+            return false;
+
+        entry = new ObjectSpawnInstruction
+        {
+            SpawnedObject = pathItem,
+            MoveSpeed = moveSpeed,
+            InitialDistance = initialDistance,
+            SpawnZoneId = spawnZoneId
+        };
+        return true;
     }
 
     private Collider ResolveRecycleTriggerCollider()
@@ -294,12 +353,26 @@ public class EnemyGridGroup : ObjectSpawned
 
     private void RecycleGridOnPath(EnemySpawner grid)
     {
+        if (_pathController == null)
+            return;
+
+        if (_owningLane != null && _owningLane.TryEnqueueGridRecycle(this, grid))
+        {
+            _pendingRecycleGrids.Remove(grid);
+            _gridInsideTriggerStates[grid] = false;
+
+            LogDebug(
+                $"Grid '{grid.name}' queued for recycle to path start distance={_pathStartDistance:0.###}.",
+                grid);
+            return;
+        }
+
         var pathItem = ResolvePathItem(grid);
-        if (pathItem == null || _pathController == null)
+        if (pathItem == null)
             return;
 
         _pathEntriesBuffer.Clear();
-            _pathEntriesBuffer.Add(new ObjectSpawnInstruction
+        _pathEntriesBuffer.Add(new ObjectSpawnInstruction
         {
             SpawnedObject = pathItem,
             MoveSpeed = _pathMoveSpeed,
