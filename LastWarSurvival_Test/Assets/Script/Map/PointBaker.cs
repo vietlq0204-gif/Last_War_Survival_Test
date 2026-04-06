@@ -373,6 +373,67 @@ public class ListPoint
         return lastPoint != null;
     }
 
+    /// <summary>
+    /// Tính khoảng cách dọc path từ point đầu tiên tới một point cụ thể trong danh sách bake.
+    /// </summary>
+    /// <param name="targetPoint">Point cần tìm khoảng cách.</param>
+    /// <param name="distance">Khoảng cách tích lũy từ first point tới target point.</param>
+    /// <param name="includeInactive">Nếu false thì bỏ qua point inactive.</param>
+    /// <param name="epsilon">Ngưỡng bỏ qua segment quá ngắn.</param>
+    /// <returns>true nếu targetPoint thuộc path đã bake.</returns>
+    public bool TryGetDistanceToPoint(
+        GameObject targetPoint,
+        out float distance,
+        bool includeInactive = true,
+        float epsilon = 1e-5f)
+    {
+        distance = 0f;
+
+        if (targetPoint == null) return false;
+        if (pointData == null || pointData.Length == 0) return false;
+
+        List<PointData> sorted = new List<PointData>(pointData.Length);
+        for (int i = 0; i < pointData.Length; i++)
+        {
+            var point = pointData[i].point;
+            if (point == null) continue;
+            if (!includeInactive && !point.activeSelf) continue;
+
+            sorted.Add(pointData[i]);
+        }
+
+        if (sorted.Count == 0) return false;
+
+        sorted.Sort((a, b) => a.index.CompareTo(b.index));
+
+        if (sorted[0].point == targetPoint)
+        {
+            distance = 0f;
+            return true;
+        }
+
+        for (int i = 1; i < sorted.Count; i++)
+        {
+            var previousPoint = sorted[i - 1].point;
+            var currentPoint = sorted[i].point;
+            if (previousPoint == null || currentPoint == null)
+                continue;
+
+            float segmentLength = Vector3.Distance(
+                previousPoint.transform.position,
+                currentPoint.transform.position);
+
+            if (segmentLength > epsilon)
+                distance += segmentLength;
+
+            if (currentPoint == targetPoint)
+                return true;
+        }
+
+        distance = 0f;
+        return false;
+    }
+
     #endregion
 }
 

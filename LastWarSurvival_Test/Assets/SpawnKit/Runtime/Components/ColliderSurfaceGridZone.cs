@@ -187,6 +187,19 @@ namespace Vit.SpawnKit.Components
         /// </summary>
         public int OccupiedSlotCount => ResolveAlgorithm() != null ? _algorithm.OccupiedSlotCount : 0;
 
+        public bool RandomizeCellPositions
+        {
+            get => randomizeCellPositions;
+            set
+            {
+                if (randomizeCellPositions == value)
+                    return;
+
+                randomizeCellPositions = value;
+                _algorithm = null;
+            }
+        }
+
         /// <summary>
         /// Trả về algorithm grid đang dùng cho zone, tái sử dụng nếu config không đổi.
         /// Hàm này ưu tiên giữ state occupied slot, nhưng khi bất kỳ tham số nào thay đổi thì phải rebuild toàn bộ algorithm.

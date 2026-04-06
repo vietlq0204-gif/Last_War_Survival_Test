@@ -49,6 +49,8 @@ public class SpawnGridQueue : CoreEventBase
     private CancellationTokenSource _spawnCancellationSource;
 
     protected virtual string SpawnedObjectLabel => "object";
+    protected int PendingSpawnCount => _pendingSpawnCount;
+    protected bool HasPendingSpawnRequests => _pendingSpawnCount > 0 || _spawnRoutine != null;
 
     protected virtual void Start()
     {
@@ -85,9 +87,9 @@ public class SpawnGridQueue : CoreEventBase
 
         PreparePool(occupiedSlots + _pendingSpawnCount);
 
-        Debug.Log(
-            $"'{name}' queued {count} {SpawnedObjectLabel} spawn(s). Pending: {_pendingSpawnCount}.",
-            this);
+        // Debug.Log(
+        //     $"'{name}' queued {count} {SpawnedObjectLabel} spawn(s). Pending: {_pendingSpawnCount}.",
+        //     this);
 
         if (_spawnRoutine == null)
             _spawnRoutine = StartCoroutine(SpawnRoutine());
@@ -160,9 +162,9 @@ public class SpawnGridQueue : CoreEventBase
 
             _pendingSpawnCount = Mathf.Max(0, _pendingSpawnCount - spawnedCount);
 
-            Debug.Log(
-                $"'{name}' spawned {spawnedCount} {SpawnedObjectLabel} into zone '{gridZone.name}'. Pending: {_pendingSpawnCount}.",
-                this);
+            // Debug.Log(
+            //     $"'{name}' spawned {spawnedCount} {SpawnedObjectLabel} into zone '{gridZone.name}'. Pending: {_pendingSpawnCount}.",
+            //     this);
         }
 
         _spawnRoutine = null;

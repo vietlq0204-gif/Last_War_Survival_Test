@@ -398,8 +398,9 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         if (!TryBuildFrame(out var frame))
             return;
 
-        int maxX = Mathf.Max(0, Mathf.CeilToInt(frame.HalfRangeX / _cellSize));
-        int maxZ = Mathf.Max(0, Mathf.CeilToInt(frame.HalfRangeZ / _cellSize));
+        // Floor here so edgePadding truly removes the outer ring of centers near the collider boundary.
+        int maxX = Mathf.Max(0, Mathf.FloorToInt(frame.HalfRangeX / _cellSize));
+        int maxZ = Mathf.Max(0, Mathf.FloorToInt(frame.HalfRangeZ / _cellSize));
 
         for (int z = -maxZ; z <= maxZ; z++)
         {
