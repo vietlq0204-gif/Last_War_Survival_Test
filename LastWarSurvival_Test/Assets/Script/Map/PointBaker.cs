@@ -439,10 +439,19 @@ public class ListPoint
 
 public class PointBaker : MonoBehaviour
 {
+    public enum PointSampleLayoutMode
+    {
+        Custom = 0,
+        EvenlySpacedOnPath = 1,
+    }
+
     private List<GameObject> points = new();
     private List<int> pointIndex = new();
 
     public ListPoint listPoint = new ListPoint(); // puclic để các hệ thống khác lấy data
+
+    [Header("Sample Layout")]
+    [SerializeField] private PointSampleLayoutMode sampleLayoutMode = PointSampleLayoutMode.Custom;
 
 #if UNITY_EDITOR
 
@@ -454,20 +463,78 @@ public class PointBaker : MonoBehaviour
     //[SerializeField] Color gizmoPointColor = Color.yellow;
     //[Range(0.05f, 100f), SerializeField]
     //float pointSize = 0.1f; // kích thước điểm
+    [SerializeField] Color gizmoPointColor = new Color(1f, 0.85f, 0.2f, 0.9f);
+    [SerializeField, Range(0.025f, 2f)] float pointSlotHandleScale = 0.125f;
+    [SerializeField] bool showPointLabels = true;
 
     void OnDrawGizmos()
     {
-        if (!showGizmos || listPoint?.pointData == null || listPoint.pointData.Length < 2)
+        if (!showGizmos)
+            return;
+
+        List<ListPoint.PointData> previewPoints = BuildPreviewPointData();
+        if (previewPoints.Count == 0)
             return;
 
         Gizmos.color = gizmoLineColor;
-        for (int i = 0; i < listPoint.pointData.Length - 1; i++)
+        for (int i = 0; i < previewPoints.Count - 1; i++)
         {
-            var a = listPoint.pointData[i].point;
-            var b = listPoint.pointData[i + 1].point;
+            var a = previewPoints[i].point;
+            var b = previewPoints[i + 1].point;
             if (a && b)
                 Gizmos.DrawLine(a.transform.position, b.transform.position);
         }
+
+        for (int i = 0; i < previewPoints.Count; i++)
+        {
+            GameObject point = previewPoints[i].point;
+            if (point == null)
+                continue;
+
+            Vector3 position = point.transform.position;
+            float handleSize = HandleUtility.GetHandleSize(position);
+            float slotSize = Mathf.Max(0.05f, handleSize * pointSlotHandleScale);
+            Vector3 slotExtents = Vector3.one * slotSize;
+
+            Gizmos.color = gizmoPointColor;
+            Gizmos.DrawCube(position, slotExtents * 0.35f);
+            Gizmos.DrawWireCube(position, slotExtents);
+
+            if (!showPointLabels)
+                continue;
+
+            Handles.color = gizmoPointColor;
+            Handles.Label(position + Vector3.up * (slotSize * 0.8f), $"[{previewPoints[i].index}]");
+        }
+    }
+
+    private List<ListPoint.PointData> BuildPreviewPointData()
+    {
+        var previewPoints = new List<ListPoint.PointData>(listPoint?.pointData?.Length ?? 0);
+
+        if (listPoint?.pointData != null)
+        {
+            for (int i = 0; i < listPoint.pointData.Length; i++)
+            {
+                var pointData = listPoint.pointData[i];
+                if (pointData.point == null)
+                    continue;
+
+                previewPoints.Add(pointData);
+            }
+        }
+
+        if (previewPoints.Count == 0)
+        {
+            var taggedPoints = GetComponentsInChildren<Transform>(true)
+                .Where(t => t != null && t.CompareTag("RoadPoint"))
+                .Select((t, index) => new ListPoint.PointData(t.gameObject, index));
+
+            previewPoints.AddRange(taggedPoints);
+        }
+
+        previewPoints.Sort((left, right) => left.index.CompareTo(right.index));
+        return previewPoints;
     }
 
 
@@ -475,6 +542,11 @@ public class PointBaker : MonoBehaviour
     public class PointBakerEditor : Editor
     {
         PointBaker baker;
+
+        private void OnEnable()
+        {
+            baker = (PointBaker)target;
+        }
 
         private void Reset()
         {
@@ -488,6 +560,13 @@ public class PointBaker : MonoBehaviour
         public override void OnInspectorGUI()
         {
             DrawDefaultInspector();
+
+            EditorGUILayout.Space();
+
+            if (GUILayout.Button("Apply Sample Layout"))
+            {
+                ApplySampleLayout(baker);
+            }
 
             if (GUILayout.Button("Bake Road Points"))
             {
@@ -526,6 +605,8 @@ public class PointBaker : MonoBehaviour
                 Debug.LogWarning("Không đủ RoadPoint để bake.");
                 return;
             }
+
+            ApplySampleLayout(baker, roadPoints);
 
             // 2) Set baker.points
             baker.points = roadPoints;
@@ -599,6 +680,78 @@ public class PointBaker : MonoBehaviour
             PrefabUtility.RecordPrefabInstancePropertyModifications(baker);
 
             Debug.Log($"Bake xong: {count} RoadPoint. ImportantIndex=[{string.Join(", ", baker.pointIndex)}]");
+        }
+
+        private void ApplySampleLayout(PointBaker baker, List<GameObject> roadPoints = null)
+        {
+            if (baker == null || baker.sampleLayoutMode == PointSampleLayoutMode.Custom)
+                return;
+
+            roadPoints ??= baker
+                .GetComponentsInChildren<Transform>(true)
+                .Where(t => t != null && t.CompareTag("RoadPoint"))
+                .Select(t => t.gameObject)
+                .ToList();
+
+            if (roadPoints.Count < 2)
+            {
+                Debug.LogWarning("Cần ít nhất 2 RoadPoint để áp dụng sample layout.");
+                return;
+            }
+
+            switch (baker.sampleLayoutMode)
+            {
+                case PointSampleLayoutMode.EvenlySpacedOnPath:
+                    ApplyEvenlySpacedOnPathLayout(roadPoints);
+                    break;
+            }
+        }
+
+        private void ApplyEvenlySpacedOnPathLayout(List<GameObject> roadPoints)
+        {
+            if (roadPoints == null || roadPoints.Count < 2)
+                return;
+
+            var tempListPoint = new ListPoint
+            {
+                pointData = new ListPoint.PointData[roadPoints.Count]
+            };
+
+            for (int i = 0; i < roadPoints.Count; i++)
+            {
+                tempListPoint.pointData[i] = new ListPoint.PointData(roadPoints[i], i);
+            }
+
+            var pathCache = new ListPoint.PathCache();
+            if (!tempListPoint.BuildPathCache(pathCache))
+            {
+                Debug.LogWarning("Không thể rải đều RoadPoint vì path hiện tại không hợp lệ.");
+                return;
+            }
+
+            Transform[] pointTransforms = roadPoints
+                .Where(point => point != null)
+                .Select(point => point.transform)
+                .ToArray();
+
+            Undo.RecordObjects(pointTransforms, "Apply Evenly Spaced Road Points");
+
+            int pointCount = roadPoints.Count;
+            for (int i = 0; i < pointCount; i++)
+            {
+                if (roadPoints[i] == null)
+                    continue;
+
+                float t = pointCount <= 1 ? 0f : i / (float)(pointCount - 1);
+                float distance = pathCache.totalLength * t;
+
+                if (!tempListPoint.EvaluateByDistance(pathCache, distance, out Vector3 position))
+                    continue;
+
+                roadPoints[i].transform.position = position;
+                EditorUtility.SetDirty(roadPoints[i].transform);
+                PrefabUtility.RecordPrefabInstancePropertyModifications(roadPoints[i].transform);
+            }
         }
 
         private void AddColliderAndRename(GameObject point, string newName)
