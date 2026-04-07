@@ -28,6 +28,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
     private readonly Dictionary<int, ReservedPlacement> _requestPlacements = new Dictionary<int, ReservedPlacement>(32);
     private readonly Dictionary<long, SpawnGridSlotReservation> _slotReservations = new Dictionary<long, SpawnGridSlotReservation>(128);
     private readonly HashSet<long> _occupiedSlots = new HashSet<long>();
+    private readonly HashSet<long> _blockedSlots = new HashSet<long>();
     private readonly List<long> _releasedKeysBuffer = new List<long>(16);
 
     public ColliderSurfaceGridAlgorithm(
@@ -61,8 +62,19 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         get
         {
             PruneReleasedReservations();
-            return _occupiedSlots.Count;
+            return CountUnavailableSlots();
         }
+    }
+
+    public void SetBlockedSlots(IEnumerable<long> blockedSlots)
+    {
+        _blockedSlots.Clear();
+
+        if (blockedSlots == null)
+            return;
+
+        foreach (long blockedSlot in blockedSlots)
+            _blockedSlots.Add(blockedSlot);
     }
 
     public bool Matches(
@@ -99,7 +111,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         int available = 0;
         for (int i = 0; i < _candidateCells.Count; i++)
         {
-            if (_occupiedSlots.Contains(_candidateCells[i].Key)) continue;
+            if (IsSlotUnavailable(_candidateCells[i].Key)) continue;
             available++;
         }
 
@@ -123,7 +135,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
                 cell.Z,
                 cell.Position,
                 cell.Rotation,
-                _occupiedSlots.Contains(cell.Key)));
+                IsSlotUnavailable(cell.Key)));
         }
     }
 
@@ -163,7 +175,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         for (int i = 0; i < _candidateCells.Count; i++)
         {
             var candidate = _candidateCells[i];
-            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (IsSlotUnavailable(candidate.Key)) continue;
             if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
 
             placement = CreatePlacement(candidate);
@@ -187,7 +199,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         for (int i = 0; i < _candidateCells.Count; i++)
         {
             var candidate = _candidateCells[i];
-            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (IsSlotUnavailable(candidate.Key)) continue;
             if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
             availableCount++;
         }
@@ -201,7 +213,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         for (int i = 0, availableIndex = 0; i < _candidateCells.Count; i++)
         {
             var candidate = _candidateCells[i];
-            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (IsSlotUnavailable(candidate.Key)) continue;
             if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
 
             if (availableIndex == targetIndex)
@@ -211,6 +223,94 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
             }
 
             availableIndex++;
+        }
+
+        return false;
+    }
+
+    public bool TryGetRandomPlacement(
+        uint seed,
+        uint salt,
+        ISet<long> excludedKeys,
+        out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        int candidateCount = 0;
+        for (int i = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_blockedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+            candidateCount++;
+        }
+
+        if (candidateCount <= 0)
+            return false;
+
+        uint randomState = Hash(seed ^ salt ^ 0x7f4a7c15u);
+        int targetIndex = (int)(randomState % (uint)candidateCount);
+
+        for (int i = 0, candidateIndex = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_blockedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+
+            if (candidateIndex == targetIndex)
+            {
+                placement = CreatePlacement(candidate);
+                return true;
+            }
+
+            candidateIndex++;
+        }
+
+        return false;
+    }
+
+    public bool TryGetRandomOccupiedPlacement(
+        uint seed,
+        uint salt,
+        ISet<long> excludedKeys,
+        out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        int occupiedCount = 0;
+        for (int i = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_blockedSlots.Contains(candidate.Key)) continue;
+            if (!_occupiedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+            occupiedCount++;
+        }
+
+        if (occupiedCount <= 0)
+            return false;
+
+        uint randomState = Hash(seed ^ salt ^ 0x1f123bb5u);
+        int targetIndex = (int)(randomState % (uint)occupiedCount);
+
+        for (int i = 0, occupiedIndex = 0; i < _candidateCells.Count; i++)
+        {
+            var candidate = _candidateCells[i];
+            if (_blockedSlots.Contains(candidate.Key)) continue;
+            if (!_occupiedSlots.Contains(candidate.Key)) continue;
+            if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
+
+            if (occupiedIndex == targetIndex)
+            {
+                placement = CreatePlacement(candidate);
+                return true;
+            }
+
+            occupiedIndex++;
         }
 
         return false;
@@ -231,7 +331,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         for (int i = 0; i < _candidateCells.Count; i++)
         {
             var candidate = _candidateCells[i];
-            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (IsSlotUnavailable(candidate.Key)) continue;
             if (excludedKeys != null && excludedKeys.Contains(candidate.Key)) continue;
 
             float distanceSqr = (candidate.Position - referencePosition).sqrMagnitude;
@@ -266,6 +366,12 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
     public void ReleaseReservation(long slotKey)
     {
         ReleasePlacement(slotKey);
+    }
+
+    public bool IsSlotOccupied(long slotKey)
+    {
+        PruneReleasedReservations();
+        return _occupiedSlots.Contains(slotKey);
     }
 
     public bool TryGetPlacementPose(long slotKey, out Vector3 position, out Quaternion rotation)
@@ -376,7 +482,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         for (int i = 0; i < _candidateCells.Count; i++)
         {
             var candidate = _candidateCells[i];
-            if (_occupiedSlots.Contains(candidate.Key)) continue;
+            if (IsSlotUnavailable(candidate.Key)) continue;
 
             _occupiedSlots.Add(candidate.Key);
             reservedPlacement = new ReservedPlacement(candidate.Key, candidate.Position, candidate.Rotation);
@@ -557,6 +663,28 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
             _slotReservations.Remove(key);
             _occupiedSlots.Remove(key);
         }
+    }
+
+    private bool IsSlotUnavailable(long slotKey)
+    {
+        return _occupiedSlots.Contains(slotKey) || _blockedSlots.Contains(slotKey);
+    }
+
+    private int CountUnavailableSlots()
+    {
+        if (_blockedSlots.Count <= 0)
+            return _occupiedSlots.Count;
+
+        int unavailableCount = _occupiedSlots.Count;
+        foreach (long blockedSlot in _blockedSlots)
+        {
+            if (_occupiedSlots.Contains(blockedSlot))
+                continue;
+
+            unavailableCount++;
+        }
+
+        return unavailableCount;
     }
 
     private static float ProjectAabbHalfExtent(Vector3 extents, Vector3 axis)
@@ -740,6 +868,9 @@ public sealed class SpawnGridSlotReservation : MonoBehaviour, ISpawnPoolCallback
     private IGridSlotReservationOwner _owner;
     private long _slotKey;
     private bool _isBound;
+
+    public long SlotKey => _slotKey;
+    public bool IsBound => _isBound;
 
     public void Bind(IGridSlotReservationOwner owner, long slotKey)
     {

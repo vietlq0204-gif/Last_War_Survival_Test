@@ -318,6 +318,7 @@ public class EnemyGridGroup : ObjectSpawned
         _pendingRecycleGrids.Remove(grid);
         _gridInsideTriggerStates[grid] = false;
 
+        grid.ResetBlockedSlots();
         grid.FillAvailableSlots();
     }
 
@@ -403,6 +404,7 @@ public class EnemyGridGroup : ObjectSpawned
         LogDebug(
             $"Grid '{grid.name}' recycled to path start distance={_pathStartDistance:0.###}. worldPosNow={grid.transform.position}.",
             grid);
+        grid.ResetBlockedSlots();
         grid.FillAvailableSlots();
     }
 

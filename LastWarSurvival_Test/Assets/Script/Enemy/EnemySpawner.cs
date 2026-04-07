@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using Vit.SpawnKit.Algorithms;
 using Vit.SpawnKit.Components;
 
 public class EnemySpawner : SpawnGridQueue
@@ -23,6 +24,7 @@ public class EnemySpawner : SpawnGridQueue
     private ColliderSurfaceGridZone _cachedGridZone;
     private Collider[] _overlapBuffer;
     private readonly HashSet<EntityId> _aliveEnemyIds = new HashSet<EntityId>();
+    private readonly HashSet<long> _blockedSlotKeys = new HashSet<long>();
     private EnemyGridGroup _owningGroup;
     private bool _hasPendingEmptyRecycleRequest;
     private int _pendingHomeDamage;
@@ -59,6 +61,8 @@ public class EnemySpawner : SpawnGridQueue
         _pendingHomeHitCount = 0;
         _homeDamageDispatchFrame = -1;
         _pendingHomeCollisionLayer = -1;
+        _blockedSlotKeys.Clear();
+        SyncBlockedSlotsWithAlgorithm();
     }
 
     public bool FillAvailableSlots()
@@ -69,14 +73,14 @@ public class EnemySpawner : SpawnGridQueue
 
     public int GetAvailableSlotCount()
     {
-        var gridZone = ResolveGridZone();
-        return gridZone != null ? gridZone.GetAvailableSlotCount() : 0;
+        ColliderSurfaceGridAlgorithm algorithm = ResolveGridAlgorithm();
+        return algorithm != null ? algorithm.GetAvailableSlotCount() : 0;
     }
 
     public override int GetOccupiedSlotCount()
     {
-        var gridZone = ResolveGridZone();
-        return gridZone != null ? gridZone.OccupiedSlotCount : 0;
+        ColliderSurfaceGridAlgorithm algorithm = ResolveGridAlgorithm();
+        return algorithm != null ? algorithm.OccupiedSlotCount : 0;
     }
 
     public bool HasSpawnedObjectsInside()
@@ -213,6 +217,67 @@ public class EnemySpawner : SpawnGridQueue
         return anchor != null;
     }
 
+    public bool TryRelocateEnemyToUnblockedSlot(
+        Enemy enemy,
+        ObstacleSlotSelectionMode selectionMode,
+        float nearbyDistance,
+        out Vector3 targetLocalPosition,
+        out Quaternion targetLocalRotation)
+    {
+        targetLocalPosition = default;
+        targetLocalRotation = Quaternion.identity;
+
+        if (enemy == null)
+            return false;
+
+        ColliderSurfaceGridAlgorithm algorithm = ResolveGridAlgorithm();
+        if (algorithm == null)
+            return false;
+
+        bool hasBoundReservation = enemy.TryGetComponent(out SpawnGridSlotReservation reservation) && reservation.IsBound;
+        if (hasBoundReservation)
+        {
+            long currentSlotKey = reservation.SlotKey;
+            _blockedSlotKeys.Add(currentSlotKey);
+            reservation.ReleaseReservationNow();
+            SyncBlockedSlotsWithAlgorithm();
+        }
+
+        uint seed = (uint)Random.Range(int.MinValue, int.MaxValue);
+        uint salt = (uint)Time.frameCount;
+
+        if (!TryResolveObstaclePlacement(
+                algorithm,
+                seed,
+                salt,
+                selectionMode,
+                out ColliderSurfaceGridPlacement placement,
+                out bool shouldReservePlacement))
+        {
+            return false;
+        }
+
+        if (shouldReservePlacement)
+            algorithm.BindReservation(enemy.gameObject, in placement);
+
+        Vector3 slotLocalPosition = transform.InverseTransformPoint(placement.Position);
+        Vector3 slotOffset = ResolveSlotOffset(slotLocalPosition, nearbyDistance);
+
+        targetLocalPosition = slotLocalPosition + slotOffset;
+        targetLocalPosition.y = enemy.transform.localPosition.y;
+        targetLocalRotation = Quaternion.Inverse(transform.rotation) * placement.Rotation;
+        return true;
+    }
+
+    public void ResetBlockedSlots()
+    {
+        if (_blockedSlotKeys.Count <= 0)
+            return;
+
+        _blockedSlotKeys.Clear();
+        SyncBlockedSlotsWithAlgorithm();
+    }
+
     private ColliderSurfaceGridZone ResolveGridZone()
     {
         if (_cachedGridZone != null)
@@ -220,6 +285,20 @@ public class EnemySpawner : SpawnGridQueue
 
         _cachedGridZone = GetComponentInChildren<ColliderSurfaceGridZone>(true);
         return _cachedGridZone;
+    }
+
+    private ColliderSurfaceGridAlgorithm ResolveGridAlgorithm()
+    {
+        ColliderSurfaceGridZone gridZone = ResolveGridZone();
+        if (gridZone == null)
+            return null;
+
+        ColliderSurfaceGridAlgorithm algorithm = gridZone.ResolveAlgorithm();
+        if (algorithm == null)
+            return null;
+
+        algorithm.SetBlockedSlots(_blockedSlotKeys);
+        return algorithm;
     }
 
     private Collider ResolveOccupancyCollider()
@@ -383,6 +462,68 @@ public class EnemySpawner : SpawnGridQueue
         }
 
         _lastMotionSamplePosition = currentPosition;
+    }
+
+    private void SyncBlockedSlotsWithAlgorithm()
+    {
+        ColliderSurfaceGridZone gridZone = ResolveGridZone();
+        if (gridZone == null)
+            return;
+
+        ColliderSurfaceGridAlgorithm algorithm = gridZone.ResolveAlgorithm();
+        algorithm?.SetBlockedSlots(_blockedSlotKeys);
+    }
+
+    private static bool TryResolveObstaclePlacement(
+        ColliderSurfaceGridAlgorithm algorithm,
+        uint seed,
+        uint salt,
+        ObstacleSlotSelectionMode selectionMode,
+        out ColliderSurfaceGridPlacement placement,
+        out bool shouldReservePlacement)
+    {
+        placement = default;
+        shouldReservePlacement = false;
+
+        switch (selectionMode)
+        {
+            case ObstacleSlotSelectionMode.OccupiedOnly:
+                return algorithm.TryGetRandomOccupiedPlacement(seed, salt, null, out placement);
+
+            case ObstacleSlotSelectionMode.AnyUnlocked:
+                if (!algorithm.TryGetRandomPlacement(seed, salt, null, out placement))
+                    return false;
+
+                shouldReservePlacement = !algorithm.IsSlotOccupied(placement.Key);
+                return true;
+
+            case ObstacleSlotSelectionMode.EmptyOnly:
+            default:
+                if (!algorithm.TryGetRandomAvailablePlacement(seed, salt, null, out placement))
+                    return false;
+
+                shouldReservePlacement = true;
+                return true;
+        }
+    }
+
+    private static Vector3 ResolveSlotOffset(Vector3 slotLocalPosition, float nearbyDistance)
+    {
+        if (nearbyDistance <= 0f)
+            return Vector3.zero;
+
+        Vector3 planarDirection = new Vector3(slotLocalPosition.x, 0f, slotLocalPosition.z);
+        if (planarDirection.sqrMagnitude <= 0.0001f)
+        {
+            planarDirection = Random.insideUnitSphere;
+            planarDirection.y = 0f;
+        }
+
+        planarDirection = planarDirection.sqrMagnitude > 0.0001f
+            ? planarDirection.normalized
+            : Vector3.right;
+
+        return planarDirection * nearbyDistance;
     }
 
     private static int AddClamped(int currentValue, int delta)

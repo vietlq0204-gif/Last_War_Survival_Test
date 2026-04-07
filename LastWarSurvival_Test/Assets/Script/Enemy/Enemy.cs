@@ -1,6 +1,13 @@
 using UnityEngine;
 using Vit.SpawnKit.Algorithms;
 
+public enum ObstacleSlotSelectionMode
+{
+    EmptyOnly = 0,
+    OccupiedOnly = 1,
+    AnyUnlocked = 2,
+}
+
 public class Enemy : ObjectSpawned
 {
     private const string EnemyLayerName = "Enemy";
@@ -13,8 +20,9 @@ public class Enemy : ObjectSpawned
 
     [Header("Obstacle Avoidance")]
     [SerializeField] private LayerMask obstacleAvoidanceLayers;
+    [SerializeField] private ObstacleSlotSelectionMode obstacleSlotSelectionMode = ObstacleSlotSelectionMode.EmptyOnly;
     [SerializeField, Min(0.05f)] private float obstacleRepositionSpeed = 5f;
-    [SerializeField, Min(0.05f)] private float obstacleAnchorDistance = 0.75f;
+    [SerializeField, Min(0.05f)] private float obstacleSlotDistance = 0.75f;
     [SerializeField, Min(0.05f)] private float obstacleArrivalDistance = 0.15f;
 
     private EnemySpawner _owningSpawner;
@@ -22,9 +30,9 @@ public class Enemy : ObjectSpawned
     private bool[] _defaultRendererStates;
     private int _currentHealth;
     private bool _isDead;
-    private bool _isMovingNearAnchor;
-    private Enemy _obstacleAnchorEnemy;
-    private Vector3 _obstacleAnchorLocalOffset;
+    private bool _isMovingToObstacleSlot;
+    private Vector3 _obstacleTargetLocalPosition;
+    private Quaternion _obstacleTargetLocalRotation;
 
     public int MaxHealth => maxHealth;
     public int CurrentHealth => _currentHealth;
@@ -43,15 +51,15 @@ public class Enemy : ObjectSpawned
     private void OnValidate()
     {
         obstacleRepositionSpeed = Mathf.Max(0.05f, obstacleRepositionSpeed);
-        obstacleAnchorDistance = Mathf.Max(0.05f, obstacleAnchorDistance);
+        obstacleSlotDistance = Mathf.Max(0.05f, obstacleSlotDistance);
         obstacleArrivalDistance = Mathf.Max(0.05f, obstacleArrivalDistance);
         EnsureObstacleAvoidanceLayer();
     }
 
     private void Update()
     {
-        if (_isMovingNearAnchor)
-            TickObstacleAnchorMove(Time.deltaTime);
+        if (_isMovingToObstacleSlot)
+            TickObstacleSlotMove(Time.deltaTime);
     }
 
     public override void OnSpawnedFromPool()
@@ -59,9 +67,9 @@ public class Enemy : ObjectSpawned
         base.OnSpawnedFromPool();
 
         _isDead = false;
-        _isMovingNearAnchor = false;
-        _obstacleAnchorEnemy = null;
-        _obstacleAnchorLocalOffset = Vector3.zero;
+        _isMovingToObstacleSlot = false;
+        _obstacleTargetLocalPosition = Vector3.zero;
+        _obstacleTargetLocalRotation = Quaternion.identity;
         _currentHealth = Mathf.Max(1, maxHealth);
         EnsureHitDetectionLayer();
         EnsureObstacleAvoidanceLayer();
@@ -78,9 +86,9 @@ public class Enemy : ObjectSpawned
         _owningSpawner?.NotifyEnemyDespawned(this);
         _owningSpawner = null;
         _isDead = false;
-        _isMovingNearAnchor = false;
-        _obstacleAnchorEnemy = null;
-        _obstacleAnchorLocalOffset = Vector3.zero;
+        _isMovingToObstacleSlot = false;
+        _obstacleTargetLocalPosition = Vector3.zero;
+        _obstacleTargetLocalRotation = Quaternion.identity;
         _currentHealth = Mathf.Max(1, maxHealth);
         RestoreDefaultRendererStates();
         base.OnDespawnedToPool();
@@ -146,8 +154,7 @@ public class Enemy : ObjectSpawned
 
         _isDead = true;
         _currentHealth = 0;
-        _isMovingNearAnchor = false;
-        _obstacleAnchorEnemy = null;
+        _isMovingToObstacleSlot = false;
         ReleaseGridReservation();
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
@@ -162,8 +169,7 @@ public class Enemy : ObjectSpawned
 
         _isDead = true;
         _currentHealth = 0;
-        _isMovingNearAnchor = false;
-        _obstacleAnchorEnemy = null;
+        _isMovingToObstacleSlot = false;
         ReleaseGridReservation();
 
         Transform detachedParent = owningSpawner != null ? owningSpawner.transform.parent : null;
@@ -201,96 +207,41 @@ public class Enemy : ObjectSpawned
         if (transform.parent != owningSpawner.transform)
             transform.SetParent(owningSpawner.transform, true);
 
-        SelectObstacleAnchor();
-    }
-
-    private void TickObstacleAnchorMove(float deltaTime)
-    {
-        if (!_isMovingNearAnchor || deltaTime <= 0f)
-            return;
-
-        if (!TryGetObstacleAnchor(out Enemy anchor))
+        if (!owningSpawner.TryRelocateEnemyToUnblockedSlot(
+                this,
+                obstacleSlotSelectionMode,
+                obstacleSlotDistance,
+                out _obstacleTargetLocalPosition,
+                out _obstacleTargetLocalRotation))
         {
-            _isMovingNearAnchor = false;
+            _isMovingToObstacleSlot = false;
             return;
         }
 
-        Vector3 targetLocalPosition = anchor.transform.localPosition + _obstacleAnchorLocalOffset;
-        targetLocalPosition.y = transform.localPosition.y;
-        Quaternion targetLocalRotation = anchor.transform.localRotation;
+        _isMovingToObstacleSlot = true;
+    }
+
+    private void TickObstacleSlotMove(float deltaTime)
+    {
+        if (!_isMovingToObstacleSlot || deltaTime <= 0f)
+            return;
 
         transform.localPosition = Vector3.MoveTowards(
             transform.localPosition,
-            targetLocalPosition,
+            _obstacleTargetLocalPosition,
             obstacleRepositionSpeed * deltaTime);
 
         transform.localRotation = Quaternion.RotateTowards(
             transform.localRotation,
-            targetLocalRotation,
+            _obstacleTargetLocalRotation,
             obstacleRepositionSpeed * 180f * deltaTime);
 
-        if (Vector3.Distance(transform.localPosition, targetLocalPosition) <= obstacleArrivalDistance)
+        if (Vector3.Distance(transform.localPosition, _obstacleTargetLocalPosition) <= obstacleArrivalDistance)
         {
-            transform.localPosition = targetLocalPosition;
-            transform.localRotation = targetLocalRotation;
-            _isMovingNearAnchor = false;
+            transform.localPosition = _obstacleTargetLocalPosition;
+            transform.localRotation = _obstacleTargetLocalRotation;
+            _isMovingToObstacleSlot = false;
         }
-    }
-
-    private void SelectObstacleAnchor()
-    {
-        _obstacleAnchorEnemy = null;
-        _obstacleAnchorLocalOffset = Vector3.zero;
-        _isMovingNearAnchor = false;
-
-        if (_owningSpawner == null || !_owningSpawner.TryGetRandomAliveEnemyAnchor(this, out Enemy anchor))
-            return;
-
-        _obstacleAnchorEnemy = anchor;
-        _obstacleAnchorLocalOffset = ResolveObstacleAnchorOffset(anchor);
-        _isMovingNearAnchor = true;
-    }
-
-    private bool TryGetObstacleAnchor(out Enemy anchor)
-    {
-        anchor = _obstacleAnchorEnemy;
-        if (anchor != null
-            && anchor.IsAlive
-            && anchor.gameObject.activeInHierarchy
-            && _owningSpawner != null
-            && anchor.transform.parent == _owningSpawner.transform)
-        {
-            return true;
-        }
-
-        SelectObstacleAnchor();
-        anchor = _obstacleAnchorEnemy;
-        return anchor != null
-               && anchor.IsAlive
-               && anchor.gameObject.activeInHierarchy
-               && _owningSpawner != null
-               && anchor.transform.parent == _owningSpawner.transform;
-    }
-
-    private Vector3 ResolveObstacleAnchorOffset(Enemy anchor)
-    {
-        if (anchor == null)
-            return Vector3.zero;
-
-        Vector3 awayDirection = transform.localPosition - anchor.transform.localPosition;
-        awayDirection.y = 0f;
-
-        if (awayDirection.sqrMagnitude <= 0.0001f)
-        {
-            awayDirection = Random.insideUnitSphere;
-            awayDirection.y = 0f;
-        }
-
-        awayDirection = awayDirection.sqrMagnitude > 0.0001f
-            ? awayDirection.normalized
-            : Vector3.right;
-
-        return awayDirection * obstacleAnchorDistance;
     }
 
     private EnemySpawner ResolveOwningSpawner()
