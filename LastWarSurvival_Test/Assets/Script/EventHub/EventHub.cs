@@ -118,6 +118,30 @@ public sealed class CollitionEvent
     }
 }
 
+public sealed class EnemyHomeDamageBatchEvent
+{
+    public EnemySpawner sourceSpawner { get; set; }
+    public int totalDamage { get; set; }
+    public int enemyHitCount { get; set; }
+    public int collisionLayer { get; set; }
+
+    public EnemyHomeDamageBatchEvent()
+    {
+        sourceSpawner = null;
+        totalDamage = 0;
+        enemyHitCount = 0;
+        collisionLayer = -1;
+    }
+
+    public EnemyHomeDamageBatchEvent(EnemySpawner sourceSpawner, int totalDamage, int enemyHitCount, int collisionLayer)
+    {
+        this.sourceSpawner = sourceSpawner;
+        this.totalDamage = totalDamage;
+        this.enemyHitCount = enemyHitCount;
+        this.collisionLayer = collisionLayer;
+    }
+}
+
 public static class CoreEvents
 {
     public static string LastEventName;
@@ -131,4 +155,9 @@ public static class CoreEvents
     /// Event va cham tong hop, hien tai duoc dung cho luong CardAddQuantity -> Player.
     /// </summary>
     public static readonly EventHub<CollitionEvent> collition = new EventHub<CollitionEvent>();
+
+    /// <summary>
+    /// Event batch khi enemy cham Home va da duoc tong hop damage theo EnemySpawner.
+    /// </summary>
+    public static readonly EventHub<EnemyHomeDamageBatchEvent> enemyHomeDamageBatch = new EventHub<EnemyHomeDamageBatchEvent>();
 }

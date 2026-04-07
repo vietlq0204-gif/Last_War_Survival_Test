@@ -20,15 +20,23 @@ public class EnemySpawner : SpawnGridQueue
     [Tooltip("If enabled, the linked grid zone is forced to use aligned slots so formation enemies stay on a strict grid.")]
     [SerializeField] private bool enforceAlignedGridSlots = true;
 
+    [Header("Home Damage Batch")]
+    [SerializeField, Min(0)] private int homeDamageDispatchDelayFrames = 2;
+
     private ColliderSurfaceGridZone _cachedGridZone;
     private Collider[] _overlapBuffer;
     private readonly HashSet<EntityId> _aliveEnemyIds = new HashSet<EntityId>();
     private EnemyGridGroup _owningGroup;
     private bool _hasPendingEmptyRecycleRequest;
+    private int _pendingHomeDamage;
+    private int _pendingHomeHitCount;
+    private int _homeDamageDispatchFrame = -1;
+    private int _pendingHomeCollisionLayer = -1;
 
     private void OnValidate()
     {
         SyncGridZoneSettings();
+        homeDamageDispatchDelayFrames = Mathf.Max(0, homeDamageDispatchDelayFrames);
     }
 
     protected override string SpawnedObjectLabel => "enemy";
@@ -45,8 +53,13 @@ public class EnemySpawner : SpawnGridQueue
     protected override void OnDisable()
     {
         base.OnDisable();
+        FlushPendingHomeDamage(forceImmediate: true);
         _aliveEnemyIds.Clear();
         _hasPendingEmptyRecycleRequest = false;
+        _pendingHomeDamage = 0;
+        _pendingHomeHitCount = 0;
+        _homeDamageDispatchFrame = -1;
+        _pendingHomeCollisionLayer = -1;
     }
 
     public bool FillAvailableSlots()
@@ -135,12 +148,30 @@ public class EnemySpawner : SpawnGridQueue
         TryRequestImmediateRecycleWhenEmpty();
     }
 
+    public void NotifyEnemyReachedHome(Enemy enemy, int collisionLayer)
+    {
+        if (enemy == null)
+            return;
+
+        _pendingHomeDamage = AddClamped(_pendingHomeDamage, enemy.ContactDamage);
+        _pendingHomeHitCount = AddClamped(_pendingHomeHitCount, 1);
+        _pendingHomeCollisionLayer = collisionLayer;
+
+        if (_homeDamageDispatchFrame < 0)
+            _homeDamageDispatchFrame = Time.frameCount + Mathf.Max(0, homeDamageDispatchDelayFrames);
+    }
+
     public bool Intersects(Collider other)
     {
         var resolvedOccupancyCollider = ResolveOccupancyCollider();
         return resolvedOccupancyCollider != null
                && other != null
                && resolvedOccupancyCollider.bounds.Intersects(other.bounds);
+    }
+
+    private void Update()
+    {
+        FlushPendingHomeDamage();
     }
 
     private ColliderSurfaceGridZone ResolveGridZone()
@@ -288,5 +319,34 @@ public class EnemySpawner : SpawnGridQueue
             Mathf.Abs(value.x),
             Mathf.Abs(value.y),
             Mathf.Abs(value.z));
+    }
+
+    private void FlushPendingHomeDamage(bool forceImmediate = false)
+    {
+        if (_pendingHomeDamage <= 0 || _pendingHomeHitCount <= 0)
+            return;
+
+        if (!forceImmediate && _homeDamageDispatchFrame >= 0 && Time.frameCount < _homeDamageDispatchFrame)
+            return;
+
+        CoreEvents.enemyHomeDamageBatch.Raise(new EnemyHomeDamageBatchEvent(
+            this,
+            _pendingHomeDamage,
+            _pendingHomeHitCount,
+            _pendingHomeCollisionLayer));
+
+        _pendingHomeDamage = 0;
+        _pendingHomeHitCount = 0;
+        _homeDamageDispatchFrame = -1;
+        _pendingHomeCollisionLayer = -1;
+    }
+
+    private static int AddClamped(int currentValue, int delta)
+    {
+        if (delta <= 0)
+            return Mathf.Max(0, currentValue);
+
+        long total = (long)Mathf.Max(0, currentValue) + delta;
+        return total > int.MaxValue ? int.MaxValue : (int)total;
     }
 }

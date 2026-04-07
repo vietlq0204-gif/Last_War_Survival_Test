@@ -11,14 +11,24 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
     [SerializeField, Min(0f)] private float slotRotationTolerance = 0.5f;
     [SerializeField] private AnimationCurve moveToSlotCurve = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
 
+    private TeammateSpawner _owningSpawner;
     private ColliderSurfaceGridAlgorithm _assignedSlotAlgorithm;
+    private Renderer[] _cachedRenderers;
+    private bool[] _defaultRendererStates;
     private long _assignedSlotKey;
     private Vector3 _lastResolvedSlotPosition;
     private Quaternion _lastResolvedSlotRotation;
+    private bool _isQueuedForDamageDespawn;
 
     public bool HasAssignedFormationSlot => _assignedSlotAlgorithm != null;
     public Vector3 AssignedFormationSlotPosition => _lastResolvedSlotPosition;
     public Quaternion AssignedFormationSlotRotation => _lastResolvedSlotRotation;
+
+    protected override void Awake()
+    {
+        base.Awake();
+        CacheRenderers();
+    }
 
     protected virtual void Update()
     {
@@ -61,12 +71,21 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
     public override void OnSpawnedFromPool()
     {
         ResetAssignedFormationSlot();
+        _isQueuedForDamageDespawn = false;
+        RestoreDefaultRendererStates();
         base.OnSpawnedFromPool();
+
+        _owningSpawner = ResolveOwningSpawner();
+        _owningSpawner?.RegisterSpawnedTeammate(this);
     }
 
     public override void OnDespawnedToPool()
     {
+        _owningSpawner?.NotifyTeammateDespawned(this);
+        _owningSpawner = null;
+        _isQueuedForDamageDespawn = false;
         ResetAssignedFormationSlot();
+        RestoreDefaultRendererStates();
         base.OnDespawnedToPool();
     }
 
@@ -88,11 +107,77 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
         targetTransform.SetPositionAndRotation(_lastResolvedSlotPosition, _lastResolvedSlotRotation);
     }
 
+    public bool BeginQueuedDamageDespawn()
+    {
+        if (_isQueuedForDamageDespawn || !gameObject.activeInHierarchy)
+            return false;
+
+        _isQueuedForDamageDespawn = true;
+        ReleaseGridReservation();
+        SetControlledCollisionEnabled(false);
+        SetRenderersVisible(false);
+        return true;
+    }
+
     private void ResetAssignedFormationSlot()
     {
         _assignedSlotAlgorithm = null;
         _assignedSlotKey = 0L;
         _lastResolvedSlotPosition = Vector3.zero;
         _lastResolvedSlotRotation = Quaternion.identity;
+    }
+
+    private TeammateSpawner ResolveOwningSpawner()
+    {
+        return GetComponentInParent<TeammateSpawner>();
+    }
+
+    private void ReleaseGridReservation()
+    {
+        if (!TryGetComponent(out SpawnGridSlotReservation reservation))
+            return;
+
+        reservation.ReleaseReservationNow();
+    }
+
+    private void CacheRenderers()
+    {
+        _cachedRenderers = GetComponentsInChildren<Renderer>(true);
+        _defaultRendererStates = new bool[_cachedRenderers.Length];
+
+        for (int i = 0; i < _cachedRenderers.Length; i++)
+        {
+            _defaultRendererStates[i] = _cachedRenderers[i] != null && _cachedRenderers[i].enabled;
+        }
+    }
+
+    private void RestoreDefaultRendererStates()
+    {
+        if (_cachedRenderers == null || _defaultRendererStates == null)
+            return;
+
+        for (int i = 0; i < _cachedRenderers.Length; i++)
+        {
+            Renderer cachedRenderer = _cachedRenderers[i];
+            if (cachedRenderer == null)
+                continue;
+
+            cachedRenderer.enabled = _defaultRendererStates[i];
+        }
+    }
+
+    private void SetRenderersVisible(bool isVisible)
+    {
+        if (_cachedRenderers == null || _defaultRendererStates == null)
+            return;
+
+        for (int i = 0; i < _cachedRenderers.Length; i++)
+        {
+            Renderer cachedRenderer = _cachedRenderers[i];
+            if (cachedRenderer == null)
+                continue;
+
+            cachedRenderer.enabled = isVisible && _defaultRendererStates[i];
+        }
     }
 }

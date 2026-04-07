@@ -6,20 +6,21 @@ public class Enemy : ObjectSpawned
     private const string EnemyLayerName = "Enemy";
 
     [SerializeField, Min(1)] private int maxHealth = 1;
-    [SerializeField, Min(0f)] private float homeChaseMoveSpeed = 6f;
-    [SerializeField, Min(0f)] private float playerReachStoppingDistance = 0.15f;
+    [SerializeField, Min(0)] private int contactDamage = 1;
+    [SerializeField] private bool canInteractWithHomeCollider = true;
+    [SerializeField] private LayerMask despawnCollisionLayers = ~0;
 
     private EnemySpawner _owningSpawner;
     private Renderer[] _cachedRenderers;
     private bool[] _defaultRendererStates;
     private int _currentHealth;
     private bool _isDead;
-    [SerializeField] private bool _isChasingPlayer;
 
     public int MaxHealth => maxHealth;
     public int CurrentHealth => _currentHealth;
+    public int ContactDamage => Mathf.Max(0, contactDamage);
     public bool IsAlive => !_isDead;
-    public bool IsChasingPlayer => _isChasingPlayer;
+    public bool CanInteractWithHomeCollider => canInteractWithHomeCollider;
 
     protected override void Awake()
     {
@@ -33,7 +34,6 @@ public class Enemy : ObjectSpawned
         base.OnSpawnedFromPool();
 
         _isDead = false;
-        _isChasingPlayer = false;
         _currentHealth = Mathf.Max(1, maxHealth);
         EnsureHitDetectionLayer();
         RestoreDefaultRendererStates();
@@ -46,11 +46,9 @@ public class Enemy : ObjectSpawned
 
     public override void OnDespawnedToPool()
     {
-        EnemyHomeTargetService.UnregisterChasingEnemy(this);
         _owningSpawner?.NotifyEnemyDespawned(this);
         _owningSpawner = null;
         _isDead = false;
-        _isChasingPlayer = false;
         _currentHealth = Mathf.Max(1, maxHealth);
         RestoreDefaultRendererStates();
         base.OnDespawnedToPool();
@@ -65,7 +63,7 @@ public class Enemy : ObjectSpawned
         if (_currentHealth > 0)
             return true;
 
-        HandleDeath();
+        HandleDefeat();
         return true;
     }
 
@@ -74,67 +72,35 @@ public class Enemy : ObjectSpawned
         if (_isDead)
             return;
 
-        HandleDeath();
+        HandleDefeat();
     }
 
-    public bool TryBeginHomeTargeting()
+    public bool CanDespawnOnCollisionLayer(int collisionLayer)
     {
-        if (_isDead || _isChasingPlayer || !gameObject.activeInHierarchy)
+        return IsLayerIncluded(despawnCollisionLayers, collisionLayer);
+    }
+
+    public bool TryResolveHomeImpact(int collisionLayer)
+    {
+        if (_isDead || !gameObject.activeInHierarchy || !canInteractWithHomeCollider)
             return false;
 
-        if (!EnemyHomeTargetService.HasPlayerTarget())
+        if (!CanDespawnOnCollisionLayer(collisionLayer))
             return false;
 
-        if (!TryDetachFromGrid())
-            return false;
-
-        if (!EnemyHomeTargetService.RegisterChasingEnemy(this))
-            return false;
-
-        _isChasingPlayer = true;
+        EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
+        owningSpawner?.NotifyEnemyReachedHome(this, collisionLayer);
+        HandleHomeImpact(owningSpawner);
         return true;
     }
 
-    public bool TickChasePlayer(Vector3 targetPosition, float deltaTime)
-    {
-        if (_isDead || !_isChasingPlayer || deltaTime <= 0f)
-            return false;
-
-        Transform targetTransform = CachedTransform != null ? CachedTransform : transform;
-        Vector3 currentPosition = targetTransform.position;
-        targetPosition.y = currentPosition.y;
-
-        Vector3 toTarget = targetPosition - currentPosition;
-        float sqrDistance = toTarget.sqrMagnitude;
-        float stopDistance = Mathf.Max(0f, playerReachStoppingDistance);
-        if (sqrDistance <= stopDistance * stopDistance)
-            return true;
-
-        float moveSpeed = Mathf.Max(0.01f, homeChaseMoveSpeed);
-        Vector3 nextPosition = Vector3.MoveTowards(currentPosition, targetPosition, moveSpeed * deltaTime);
-        Vector3 direction = targetPosition - currentPosition;
-        targetTransform.position = nextPosition;
-
-        if (direction.sqrMagnitude > 1e-6f)
-        {
-            direction.y = 0f;
-            if (direction.sqrMagnitude > 1e-6f)
-                targetTransform.rotation = Quaternion.LookRotation(direction.normalized, Vector3.up);
-        }
-
-        return true;
-    }
-
-    private void HandleDeath()
+    private void HandleDefeat()
     {
         if (_isDead)
             return;
 
         _isDead = true;
-        _isChasingPlayer = false;
         _currentHealth = 0;
-
-        EnemyHomeTargetService.UnregisterChasingEnemy(this);
         ReleaseGridReservation();
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
@@ -142,16 +108,15 @@ public class Enemy : ObjectSpawned
         BufferedPoolDespawnQueue.Queue(this);
     }
 
-    private EnemySpawner ResolveOwningSpawner()
+    private void HandleHomeImpact(EnemySpawner owningSpawner)
     {
-        return GetComponentInParent<EnemySpawner>();
-    }
+        if (_isDead)
+            return;
 
-    private bool TryDetachFromGrid()
-    {
+        _isDead = true;
+        _currentHealth = 0;
         ReleaseGridReservation();
 
-        EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
         Transform detachedParent = owningSpawner != null ? owningSpawner.transform.parent : null;
         transform.SetParent(detachedParent, true);
 
@@ -161,7 +126,14 @@ public class Enemy : ObjectSpawned
             _owningSpawner = null;
         }
 
-        return true;
+        SetControlledCollisionEnabled(false);
+        SetRenderersVisible(false);
+        BufferedPoolDespawnQueue.Queue(this);
+    }
+
+    private EnemySpawner ResolveOwningSpawner()
+    {
+        return GetComponentInParent<EnemySpawner>();
     }
 
     private void ReleaseGridReservation()
@@ -232,5 +204,13 @@ public class Enemy : ObjectSpawned
             if (collider.gameObject.layer != enemyLayer)
                 collider.gameObject.layer = enemyLayer;
         }
+    }
+
+    private static bool IsLayerIncluded(LayerMask layerMask, int layer)
+    {
+        if (layer < 0 || layer > 31)
+            return false;
+
+        return (layerMask.value & (1 << layer)) != 0;
     }
 }
