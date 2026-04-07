@@ -129,6 +129,12 @@ public class EnemySpawner : SpawnGridQueue
         RemoveTrackedEnemy(enemy);
     }
 
+    public void NotifyEnemyExitedGrid(Enemy enemy)
+    {
+        RemoveTrackedEnemy(enemy);
+        TryRequestImmediateRecycleWhenEmpty();
+    }
+
     public bool Intersects(Collider other)
     {
         var resolvedOccupancyCollider = ResolveOccupancyCollider();
