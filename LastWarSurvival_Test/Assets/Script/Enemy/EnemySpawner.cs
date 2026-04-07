@@ -17,9 +17,6 @@ public class EnemySpawner : SpawnGridQueue
     [Tooltip("If enabled, this grid queues a fill request on Start.")]
     [SerializeField] private bool fillAvailableSlotsOnStart;
 
-    [Tooltip("If enabled, the linked grid zone is forced to use aligned slots so formation enemies stay on a strict grid.")]
-    [SerializeField] private bool enforceAlignedGridSlots = true;
-
     [Header("Home Damage Batch")]
     [SerializeField, Min(0)] private int homeDamageDispatchDelayFrames = 2;
 
@@ -35,7 +32,6 @@ public class EnemySpawner : SpawnGridQueue
 
     private void OnValidate()
     {
-        SyncGridZoneSettings();
         homeDamageDispatchDelayFrames = Mathf.Max(0, homeDamageDispatchDelayFrames);
     }
 
@@ -43,7 +39,6 @@ public class EnemySpawner : SpawnGridQueue
 
     protected override void Start()
     {
-        SyncGridZoneSettings();
         base.Start();
 
         if (fillAvailableSlotsOnStart)
@@ -177,13 +172,9 @@ public class EnemySpawner : SpawnGridQueue
     private ColliderSurfaceGridZone ResolveGridZone()
     {
         if (_cachedGridZone != null)
-        {
-            SyncGridZoneSettings(_cachedGridZone);
             return _cachedGridZone;
-        }
 
         _cachedGridZone = GetComponentInChildren<ColliderSurfaceGridZone>(true);
-        SyncGridZoneSettings(_cachedGridZone);
         return _cachedGridZone;
     }
 
@@ -298,19 +289,6 @@ public class EnemySpawner : SpawnGridQueue
     private int ResolveOccupancyLayerMask()
     {
         return occupancyLayers.value != 0 ? occupancyLayers.value : Physics.AllLayers;
-    }
-
-    private void SyncGridZoneSettings()
-    {
-        SyncGridZoneSettings(_cachedGridZone != null ? _cachedGridZone : GetComponentInChildren<ColliderSurfaceGridZone>(true));
-    }
-
-    private void SyncGridZoneSettings(ColliderSurfaceGridZone gridZone)
-    {
-        if (gridZone == null || !enforceAlignedGridSlots)
-            return;
-
-        gridZone.RandomizeCellPositions = false;
     }
 
     private static Vector3 Abs(Vector3 value)
