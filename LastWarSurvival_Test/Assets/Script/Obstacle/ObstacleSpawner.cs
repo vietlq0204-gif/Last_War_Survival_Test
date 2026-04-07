@@ -12,9 +12,11 @@ public sealed class ObstacleSpawner : MonoBehaviour
     [SerializeField] private PointBaker pointBaker;
     [SerializeField] private Transform spawnParent;
     [SerializeField] private bool spawnOnStart = true;
+    [SerializeField] private bool keepRoadFilled;
     [SerializeField, Min(0)] private int poolSizePadding = 4;
 
     private readonly List<Transform> _slotPoints = new List<Transform>(64);
+    private readonly List<Transform> _spawnSlotBuffer = new List<Transform>(64);
     private readonly List<Obstacle> _activeObstacles = new List<Obstacle>(64);
     private readonly List<GameObject> _spawnResults = new List<GameObject>(64);
 
@@ -24,6 +26,7 @@ public sealed class ObstacleSpawner : MonoBehaviour
     private bool _hasWarnedMissingPointBaker;
     private bool _hasWarnedMissingPreset;
     private bool _hasWarnedMissingSpawnManager;
+    private bool _hasPendingFillRequest;
     private SpawnManager _cachedSpawnManager;
 
     private void Awake()
@@ -35,6 +38,15 @@ public sealed class ObstacleSpawner : MonoBehaviour
     {
         if (spawnOnStart)
             SpawnObstacles();
+    }
+
+    private void LateUpdate()
+    {
+        if (!_hasPendingFillRequest || !keepRoadFilled)
+            return;
+
+        _hasPendingFillRequest = false;
+        FillEmptySlots();
     }
 
     public bool SpawnObstacles()
@@ -70,7 +82,7 @@ public sealed class ObstacleSpawner : MonoBehaviour
 
         _hasWarnedMissingSpawnManager = false;
 
-        int spawnCount = ResolveSpawnCount();
+        int spawnCount = ResolveTargetActiveCount();
         if (spawnCount <= 0)
             return false;
 
@@ -98,6 +110,7 @@ public sealed class ObstacleSpawner : MonoBehaviour
             return false;
 
         RegisterSpawnedObstacles();
+        QueueFillEmptySlotsIfNeeded();
         return _activeObstacles.Count > 0;
     }
 
@@ -106,6 +119,7 @@ public sealed class ObstacleSpawner : MonoBehaviour
         if (_suppressDespawnNotifications || obstacle == null)
             return;
 
+        int vacatedSlotIndex = Mathf.Max(0, obstacle.SlotIndex);
         int removedIndex = -1;
         for (int i = 0; i < _activeObstacles.Count; i++)
         {
@@ -124,7 +138,8 @@ public sealed class ObstacleSpawner : MonoBehaviour
             return;
 
         _activeObstacles.RemoveAt(removedIndex);
-        CompactSlotsFrom(removedIndex);
+        CompactSlotsFrom(vacatedSlotIndex);
+        QueueFillEmptySlotsIfNeeded();
     }
 
     private int FindSpawnManagerAndSpawn(in SpawnRequest request)
@@ -137,7 +152,7 @@ public sealed class ObstacleSpawner : MonoBehaviour
 
     private void RegisterSpawnedObstacles()
     {
-        _activeObstacles.Clear();
+        CleanupAndSortActiveObstacles();
 
         for (int i = 0; i < _spawnResults.Count; i++)
         {
@@ -165,6 +180,8 @@ public sealed class ObstacleSpawner : MonoBehaviour
 
     private void CompactSlotsFrom(int startIndex)
     {
+        CleanupAndSortActiveObstacles();
+
         if (startIndex < 0)
             startIndex = 0;
 
@@ -177,6 +194,32 @@ public sealed class ObstacleSpawner : MonoBehaviour
             Transform slot = i < _slotPoints.Count ? _slotPoints[i] : null;
             obstacle.Bind(this, i, slot);
         }
+    }
+
+    private void CleanupAndSortActiveObstacles()
+    {
+        for (int i = _activeObstacles.Count - 1; i >= 0; i--)
+        {
+            Obstacle obstacle = _activeObstacles[i];
+            if (obstacle == null)
+                _activeObstacles.RemoveAt(i);
+        }
+
+        _activeObstacles.Sort(CompareObstacleSlotOrder);
+    }
+
+    private static int CompareObstacleSlotOrder(Obstacle left, Obstacle right)
+    {
+        if (ReferenceEquals(left, right))
+            return 0;
+
+        if (left == null)
+            return 1;
+
+        if (right == null)
+            return -1;
+
+        return left.SlotIndex.CompareTo(right.SlotIndex);
     }
 
     private void DespawnActiveObstacles()
@@ -197,15 +240,77 @@ public sealed class ObstacleSpawner : MonoBehaviour
 
         _activeObstacles.Clear();
         _suppressDespawnNotifications = false;
+        _hasPendingFillRequest = false;
     }
 
-    private int ResolveSpawnCount()
+    private int ResolveTargetActiveCount()
     {
         if (obstacleSpawnPreset == null || obstacleSpawnPreset.spawnable == null)
             return 0;
 
+        if (keepRoadFilled)
+            return _slotPoints.Count;
+
         int maxByPreset = obstacleSpawnPreset.spawnable.ResolveSpawnCount(obstacleSpawnPreset.MaxCount);
         return Mathf.Min(_slotPoints.Count, maxByPreset);
+    }
+
+    private bool FillEmptySlots()
+    {
+        ResolvePointBaker();
+
+        if (!TryBuildSlotPoints())
+            return false;
+
+        if (obstacleSpawnPreset == null || obstacleSpawnPreset.spawnable == null)
+            return false;
+
+        if (ResolveSpawnManager() == null)
+            return false;
+
+        CleanupAndSortActiveObstacles();
+
+        int targetActiveCount = ResolveTargetActiveCount();
+        int missingCount = Mathf.Max(0, targetActiveCount - _activeObstacles.Count);
+        if (missingCount <= 0)
+            return false;
+
+        _spawnSlotBuffer.Clear();
+        for (int i = _activeObstacles.Count; i < targetActiveCount && i < _slotPoints.Count; i++)
+        {
+            Transform slot = _slotPoints[i];
+            if (slot != null)
+                _spawnSlotBuffer.Add(slot);
+        }
+
+        if (_spawnSlotBuffer.Count <= 0)
+            return false;
+
+        PreparePool(targetActiveCount);
+
+        var algorithm = new PointSequenceSpawnAlgorithm(_spawnSlotBuffer);
+        int[] variantPlan = obstacleSpawnPreset.spawnable.BuildVariantPlan(_spawnSlotBuffer.Count);
+        SpawnLifecycle? lifecycle = obstacleSpawnPreset.overrideLifecycle
+            ? obstacleSpawnPreset.lifecycle
+            : (SpawnLifecycle?)null;
+
+        var request = new SpawnRequest(
+            obstacleSpawnPreset.spawnable,
+            _spawnSlotBuffer.Count,
+            ResolveSpawnParent(),
+            algorithm,
+            obstacleSpawnPreset.seed,
+            lifecycle,
+            variantPlan);
+
+        _spawnResults.Clear();
+        int spawnedCount = FindSpawnManagerAndSpawn(request);
+        if (spawnedCount <= 0)
+            return false;
+
+        RegisterSpawnedObstacles();
+        QueueFillEmptySlotsIfNeeded();
+        return true;
     }
 
     private void PreparePool(int spawnCount)
@@ -304,6 +409,19 @@ public sealed class ObstacleSpawner : MonoBehaviour
             : FindAnyObjectByType<SpawnManager>();
 
         return _cachedSpawnManager;
+    }
+
+    private void QueueFillEmptySlotsIfNeeded()
+    {
+        if (!keepRoadFilled)
+            return;
+
+        CleanupAndSortActiveObstacles();
+
+        if (_activeObstacles.Count >= ResolveTargetActiveCount())
+            return;
+
+        _hasPendingFillRequest = true;
     }
 
     private sealed class PointSequenceSpawnAlgorithm : ISpawnAlgorithm

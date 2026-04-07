@@ -354,7 +354,7 @@ public sealed class BulletSpawner : MonoBehaviour
             return;
 
         float targetDistanceScale = deltaTime;
-        int layerMask = ResolveTargetLayerMask();
+        int layerMask = Physics.AllLayers;
 
         for (int i = _activeBullets.Count - 1; i >= 0; i--)
         {
@@ -380,10 +380,19 @@ public sealed class BulletSpawner : MonoBehaviour
                 continue;
             }
 
-            if (TryResolveEnemyHit(runtime.position, stepDistance, runtime.hitRadius, layerMask, out Enemy hitEnemy, out Vector3 hitPoint))
+            if (TryResolveDamageableHit(
+                    runtime.position,
+                    stepDistance,
+                    runtime.hitRadius,
+                    layerMask,
+                    out Enemy hitEnemy,
+                    out Obstacle hitObstacle,
+                    out Vector3 hitPoint))
             {
                 if (hitEnemy != null)
                     hitEnemy.ApplyDamage(runtime.bullet.Damage);
+                else if (hitObstacle != null)
+                    hitObstacle.ApplyDamage(runtime.bullet.Damage);
 
                 runtime.bullet.SetWorldPosition(hitPoint);
                 QueueRuntimeBulletDespawn(runtime);
@@ -397,15 +406,17 @@ public sealed class BulletSpawner : MonoBehaviour
         }
     }
 
-    private bool TryResolveEnemyHit(
+    private bool TryResolveDamageableHit(
         Vector3 origin,
         float distance,
         float hitRadius,
         int layerMask,
         out Enemy hitEnemy,
+        out Obstacle hitObstacle,
         out Vector3 hitPoint)
     {
         hitEnemy = null;
+        hitObstacle = null;
         hitPoint = origin + BulletDirection * distance;
         int hitCount = hitRadius > 0f
             ? Physics.SphereCastNonAlloc(
@@ -434,16 +445,28 @@ public sealed class BulletSpawner : MonoBehaviour
         {
             RaycastHit hit = _hitBuffer[i];
             Collider hitCollider = hit.collider;
-            Enemy resolvedEnemy = ResolveEnemyFromCollider(hitCollider);
-            if (resolvedEnemy == null || !resolvedEnemy.IsAlive)
+            if (hit.distance >= nearestDistance)
                 continue;
 
-            if (hit.distance >= nearestDistance)
+            Enemy resolvedEnemy = ResolveEnemyFromCollider(hitCollider);
+            if (resolvedEnemy != null && resolvedEnemy.IsAlive)
+            {
+                nearestDistance = hit.distance;
+                hitPoint = hit.point;
+                hitEnemy = resolvedEnemy;
+                hitObstacle = null;
+                foundEnemy = true;
+                continue;
+            }
+
+            Obstacle resolvedObstacle = ResolveObstacleFromCollider(hitCollider);
+            if (resolvedObstacle == null)
                 continue;
 
             nearestDistance = hit.distance;
             hitPoint = hit.point;
-            hitEnemy = resolvedEnemy;
+            hitEnemy = null;
+            hitObstacle = resolvedObstacle;
             foundEnemy = true;
         }
 
@@ -963,11 +986,6 @@ public sealed class BulletSpawner : MonoBehaviour
         _homeOverlapBuffer = new Collider[requiredSize];
     }
 
-    private int ResolveTargetLayerMask()
-    {
-        return targetLayers.value != 0 ? targetLayers.value : Physics.AllLayers;
-    }
-
     private static Transform ResolveTaggedTransform(Collider other, string requiredTag)
     {
         if (other == null)
@@ -1004,6 +1022,14 @@ public sealed class BulletSpawner : MonoBehaviour
 
         Transform enemyRoot = ResolveTaggedTransform(other, EnemyTag);
         return enemyRoot != null ? enemyRoot.GetComponentInParent<Enemy>() : null;
+    }
+
+    private static Obstacle ResolveObstacleFromCollider(Collider other)
+    {
+        if (other == null)
+            return null;
+
+        return other.GetComponentInParent<Obstacle>();
     }
 
     private static Collider ResolvePrimaryPlayerCollider(Transform playerRoot)

@@ -29,6 +29,10 @@ public class EnemySpawner : SpawnGridQueue
     private int _pendingHomeHitCount;
     private int _homeDamageDispatchFrame = -1;
     private int _pendingHomeCollisionLayer = -1;
+    private bool _hasMotionSample;
+    private Vector3 _lastMotionSamplePosition;
+    private Vector3 _pathMoveDirection = Vector3.forward;
+    private float _pathMoveSpeed;
 
     private void OnValidate()
     {
@@ -167,6 +171,46 @@ public class EnemySpawner : SpawnGridQueue
     private void Update()
     {
         FlushPendingHomeDamage();
+    }
+
+    private void LateUpdate()
+    {
+        SamplePathMotion();
+    }
+
+    public bool TryGetPathMotion(out Vector3 moveDirection, out float moveSpeed)
+    {
+        moveDirection = _pathMoveDirection;
+        moveSpeed = _pathMoveSpeed;
+        return _pathMoveDirection.sqrMagnitude > 0.0001f;
+    }
+
+    public bool TryGetRandomAliveEnemyAnchor(Enemy requester, out Enemy anchor)
+    {
+        anchor = null;
+        int candidateCount = 0;
+
+        Transform root = transform;
+        int childCount = root.childCount;
+
+        for (int i = 0; i < childCount; i++)
+        {
+            Transform child = root.GetChild(i);
+            if (child == null || !child.gameObject.activeInHierarchy)
+                continue;
+
+            if (!child.TryGetComponent(out Enemy candidate))
+                continue;
+
+            if (candidate == requester || !candidate.IsAlive)
+                continue;
+
+            candidateCount++;
+            if (Random.Range(0, candidateCount) == 0)
+                anchor = candidate;
+        }
+
+        return anchor != null;
     }
 
     private ColliderSurfaceGridZone ResolveGridZone()
@@ -317,6 +361,28 @@ public class EnemySpawner : SpawnGridQueue
         _pendingHomeHitCount = 0;
         _homeDamageDispatchFrame = -1;
         _pendingHomeCollisionLayer = -1;
+    }
+
+    private void SamplePathMotion()
+    {
+        Vector3 currentPosition = transform.position;
+        if (!_hasMotionSample)
+        {
+            _lastMotionSamplePosition = currentPosition;
+            _hasMotionSample = true;
+            return;
+        }
+
+        Vector3 delta = currentPosition - _lastMotionSamplePosition;
+        float deltaTime = Time.deltaTime;
+
+        if (deltaTime > Mathf.Epsilon && delta.sqrMagnitude > 0.000001f)
+        {
+            _pathMoveDirection = delta.normalized;
+            _pathMoveSpeed = delta.magnitude / deltaTime;
+        }
+
+        _lastMotionSamplePosition = currentPosition;
     }
 
     private static int AddClamped(int currentValue, int delta)
