@@ -39,6 +39,7 @@ public class EnemySpawner : SpawnGridQueue
     private Collider[] _overlapBuffer;
     private readonly HashSet<EntityId> _aliveEnemyIds = new HashSet<EntityId>();
     private readonly HashSet<long> _blockedSlotKeys = new HashSet<long>();
+    private readonly Dictionary<EntityId, long> _blockedSlotKeysByEnemy = new Dictionary<EntityId, long>();
     private readonly List<Enemy> _activeEnemiesBuffer = new List<Enemy>(64);
     private readonly List<Enemy> _unassignedEnemiesBuffer = new List<Enemy>(32);
     private readonly List<Enemy> _overflowEnemiesBuffer = new List<Enemy>(16);
@@ -85,6 +86,7 @@ public class EnemySpawner : SpawnGridQueue
         _pendingHomeHitCount = 0;
         _homeDamageDispatchFrame = -1;
         _pendingHomeCollisionLayer = -1;
+        _blockedSlotKeysByEnemy.Clear();
         _blockedSlotKeys.Clear();
         _nextObstacleProbeStartIndex = 0;
         SyncBlockedSlotsWithAlgorithm();
@@ -300,9 +302,8 @@ public class EnemySpawner : SpawnGridQueue
         if (hasBoundReservation)
         {
             long currentSlotKey = reservation.SlotKey;
-            _blockedSlotKeys.Add(currentSlotKey);
+            SetBlockedSlotForEnemy(enemy, currentSlotKey);
             reservation.ReleaseReservationNow();
-            SyncBlockedSlotsWithAlgorithm();
         }
 
         uint seed = (uint)Random.Range(int.MinValue, int.MaxValue);
@@ -331,11 +332,23 @@ public class EnemySpawner : SpawnGridQueue
         return true;
     }
 
-    public void ResetBlockedSlots()
+    public void ReleaseBlockedSlotForEnemy(Enemy enemy)
     {
-        if (_blockedSlotKeys.Count <= 0)
+        if (enemy == null)
             return;
 
+        if (!_blockedSlotKeysByEnemy.Remove(enemy.CachedEntityId))
+            return;
+
+        RebuildBlockedSlots();
+    }
+
+    public void ResetBlockedSlots()
+    {
+        if (_blockedSlotKeys.Count <= 0 && _blockedSlotKeysByEnemy.Count <= 0)
+            return;
+
+        _blockedSlotKeysByEnemy.Clear();
         _blockedSlotKeys.Clear();
         SyncBlockedSlotsWithAlgorithm();
     }
@@ -536,6 +549,25 @@ public class EnemySpawner : SpawnGridQueue
         algorithm?.SetBlockedSlots(_blockedSlotKeys);
     }
 
+    private void SetBlockedSlotForEnemy(Enemy enemy, long slotKey)
+    {
+        if (enemy == null)
+            return;
+
+        _blockedSlotKeysByEnemy[enemy.CachedEntityId] = slotKey;
+        RebuildBlockedSlots();
+    }
+
+    private void RebuildBlockedSlots()
+    {
+        _blockedSlotKeys.Clear();
+
+        foreach (long slotKey in _blockedSlotKeysByEnemy.Values)
+            _blockedSlotKeys.Add(slotKey);
+
+        SyncBlockedSlotsWithAlgorithm();
+    }
+
     private void ScanObstacleContactsBatch()
     {
         if (!useBatchedObstacleProbe)
@@ -634,26 +666,13 @@ public class EnemySpawner : SpawnGridQueue
         placement = default;
         shouldReservePlacement = false;
 
-        switch (selectionMode)
-        {
-            case ObstacleSlotSelectionMode.OccupiedOnly:
-                return algorithm.TryGetRandomOccupiedPlacement(seed, salt, null, out placement);
+        // Obstacle avoidance only cares about temporary locked slots.
+        // Occupied slots remain valid because the enemy only moves near that slot.
+        if (!algorithm.TryGetRandomPlacement(seed, salt, null, out placement))
+            return false;
 
-            case ObstacleSlotSelectionMode.AnyUnlocked:
-                if (!algorithm.TryGetRandomPlacement(seed, salt, null, out placement))
-                    return false;
-
-                shouldReservePlacement = !algorithm.IsSlotOccupied(placement.Key);
-                return true;
-
-            case ObstacleSlotSelectionMode.EmptyOnly:
-            default:
-                if (!algorithm.TryGetRandomAvailablePlacement(seed, salt, null, out placement))
-                    return false;
-
-                shouldReservePlacement = true;
-                return true;
-        }
+        shouldReservePlacement = !algorithm.IsSlotOccupied(placement.Key);
+        return true;
     }
 
     private void ReassignActiveEnemiesToSlots(ColliderSurfaceGridAlgorithm algorithm)

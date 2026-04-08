@@ -92,6 +92,7 @@ public class Enemy : ObjectSpawned
 
     public override void OnDespawnedToPool()
     {
+        // ReleaseBlockedSlotClaim();
         _owningSpawner?.NotifyEnemyDespawned(this);
         _owningSpawner = null;
         _isDead = false;
@@ -131,6 +132,7 @@ public class Enemy : ObjectSpawned
         _isMovingToObstacleSlot = false;
         _obstacleTargetLocalPosition = localPosition;
         _obstacleTargetLocalRotation = localRotation;
+        (_owningSpawner != null ? _owningSpawner : ResolveOwningSpawner())?.ReleaseBlockedSlotForEnemy(this);
         transform.localPosition = localPosition;
         transform.localRotation = localRotation;
     }
@@ -146,6 +148,7 @@ public class Enemy : ObjectSpawned
         _isDead = true;
         _currentHealth = 0;
         _isMovingToObstacleSlot = false;
+        ReleaseBlockedSlotClaim();
         ReleaseGridReservation();
 
         EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
@@ -280,6 +283,7 @@ public class Enemy : ObjectSpawned
         _isDead = true;
         _currentHealth = 0;
         _isMovingToObstacleSlot = false;
+        ReleaseBlockedSlotClaim();
         ReleaseGridReservation();
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
@@ -298,6 +302,7 @@ public class Enemy : ObjectSpawned
         _isDead = true;
         _currentHealth = 0;
         _isMovingToObstacleSlot = false;
+        ReleaseBlockedSlotClaim();
         ReleaseGridReservation();
 
         Transform detachedParent = owningSpawner != null ? owningSpawner.transform.parent : null;
@@ -383,6 +388,11 @@ public class Enemy : ObjectSpawned
             return;
 
         reservation.ReleaseReservationNow();
+    }
+
+    private void ReleaseBlockedSlotClaim()
+    {
+        (_owningSpawner != null ? _owningSpawner : ResolveOwningSpawner())?.ReleaseBlockedSlotForEnemy(this);
     }
 
     private void CacheRenderers()
