@@ -35,13 +35,11 @@ public class SpawnGridQueue : CoreEventBase
     [SerializeField] private Collider formationSpawnCollider;
 
     [SerializeField, Min(1)] private int maxSpawnPerFrame = 4;
-    [SerializeField, Min(0)] private int poolSizePadding = 8;
     [SerializeField] private bool prewarmPoolOnStart = true;
 
     private Coroutine _spawnRoutine;
     private int _pendingSpawnCount;
     private readonly List<SpawnableSO> _spawnablesBuffer = new List<SpawnableSO>(8);
-    private readonly Dictionary<SpawnableSO, int> _preparedPoolSizes = new Dictionary<SpawnableSO, int>(8);
     private bool _hasWarnedMissingSpawnPreset;
     private bool _hasWarnedMissingSpawnZone;
     private bool _hasWarnedMissingSpawnManager;
@@ -199,28 +197,13 @@ public class SpawnGridQueue : CoreEventBase
         spawnPreset.GetSpawnables(_spawnablesBuffer);
         if (_spawnablesBuffer.Count <= 0) return;
 
-        int safeMaxSpawnPerFrame = ResolveSafeMaxSpawnPerFrame();
-        int desiredPoolSize = Mathf.Max(1, targetTotalCount + poolSizePadding);
-        int prewarmCount = Mathf.Clamp(Mathf.Max(safeMaxSpawnPerFrame, targetTotalCount), 0, desiredPoolSize);
-        int growStep = safeMaxSpawnPerFrame;
-
         for (int i = 0; i < _spawnablesBuffer.Count; i++)
         {
             SpawnableSO spawnable = _spawnablesBuffer[i];
             if (spawnable == null) continue;
 
-            _preparedPoolSizes.TryGetValue(spawnable, out int preparedPoolSize);
-            if (desiredPoolSize <= preparedPoolSize) continue;
-
-            if (!SpawnKit.EnsurePoolCapacity(
-                    spawnable,
-                    desiredPoolSize,
-                    prewarmCount,
-                    growStep,
-                    allowGrow: true))
-                continue;
-
-            _preparedPoolSizes[spawnable] = desiredPoolSize;
+            if (prewarmPoolOnStart)
+                SpawnKit.Prewarm(spawnable);
         }
     }
 

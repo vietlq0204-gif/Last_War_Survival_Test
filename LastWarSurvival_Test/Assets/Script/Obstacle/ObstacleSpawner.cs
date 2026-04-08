@@ -13,14 +13,11 @@ public sealed class ObstacleSpawner : MonoBehaviour
     [SerializeField] private Transform spawnParent;
     [SerializeField] private bool spawnOnStart = true;
     [SerializeField] private bool keepRoadFilled;
-    [SerializeField, Min(0)] private int poolSizePadding = 4;
-
     private readonly List<Transform> _slotPoints = new List<Transform>(64);
     private readonly List<Transform> _spawnSlotBuffer = new List<Transform>(64);
     private readonly List<Obstacle> _activeObstacles = new List<Obstacle>(64);
     private readonly List<GameObject> _spawnResults = new List<GameObject>(64);
     private readonly List<SpawnableSO> _spawnablesBuffer = new List<SpawnableSO>(8);
-    private readonly Dictionary<SpawnableSO, int> _preparedPoolSizes = new Dictionary<SpawnableSO, int>(8);
     private bool _suppressDespawnNotifications;
     private bool _hasWarnedMissingPointBaker;
     private bool _hasWarnedMissingPreset;
@@ -301,24 +298,13 @@ public sealed class ObstacleSpawner : MonoBehaviour
         if (_spawnablesBuffer.Count <= 0)
             return;
 
-        int desiredPoolSize = Mathf.Max(1, spawnCount + Mathf.Max(0, poolSizePadding));
-        int prewarmCount = Mathf.Clamp(spawnCount, 0, desiredPoolSize);
-        int growStep = Mathf.Max(1, spawnCount);
-
         for (int i = 0; i < _spawnablesBuffer.Count; i++)
         {
             SpawnableSO spawnable = _spawnablesBuffer[i];
             if (spawnable == null)
                 continue;
 
-            _preparedPoolSizes.TryGetValue(spawnable, out int preparedPoolSize);
-            if (desiredPoolSize <= preparedPoolSize)
-                continue;
-
-            if (!SpawnKit.EnsurePoolCapacity(spawnable, desiredPoolSize, prewarmCount, growStep, allowGrow: true))
-                continue;
-
-            _preparedPoolSizes[spawnable] = desiredPoolSize;
+            SpawnKit.Prewarm(spawnable);
         }
     }
 

@@ -81,7 +81,7 @@ namespace Vit.SpawnKit.Services
 
         private void Start()
         {
-            Prewarm(catalog);
+            // Prewarm(catalog);
         }
 
         private void OnDestroy()

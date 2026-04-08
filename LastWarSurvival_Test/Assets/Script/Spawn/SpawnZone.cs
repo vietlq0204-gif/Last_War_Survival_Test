@@ -15,12 +15,11 @@ public abstract class SpawnZone : CoreEventBase
     [SerializeField, Min(1)] private int maxSpawnPerFrame = 32;
     [SerializeField, Min(0f)] private float respawnDelay = 0f;
     [SerializeField, Min(1)] private int despawnBatchSize = 64;
-    [SerializeField, Min(0)] private int poolSizePadding = 8;
-
     private readonly Dictionary<EntityId, ObjectSpawned> _activeInstances = new Dictionary<EntityId, ObjectSpawned>(128);
     private readonly List<ObjectSpawnInstruction> _spawnBatchBuffer = new List<ObjectSpawnInstruction>(128);
     private readonly List<GameObject> _spawnResultsBuffer = new List<GameObject>(128);
     private readonly List<GameObject> _despawnBuffer = new List<GameObject>(128);
+    private readonly List<SpawnableSO> _spawnablesBuffer = new List<SpawnableSO>(8);
     private readonly WaitForEndOfFrame _endOfFrameYield = new WaitForEndOfFrame();
 
     private Coroutine _initialFillRoutine;
@@ -103,27 +102,12 @@ public abstract class SpawnZone : CoreEventBase
         _resolvedSpawnParent = ResolveSpawnParent();
         _spawnAlgorithm = new FixedPoseAlgorithm(position, rotation);
 
-        EnsureRuntimePoolCapacity(targetCount);
+        PrewarmConfiguredSpawnables();
         return true;
     }
 
     protected abstract bool TryResolveSpawnPose(out Vector3 position, out Quaternion rotation);
     protected abstract bool DispatchSpawnBatch(IReadOnlyList<ObjectSpawnInstruction> entries);
-
-    protected virtual int ResolveDesiredPoolSize(int targetCount)
-    {
-        return Mathf.Max(1, targetCount + poolSizePadding);
-    }
-
-    protected virtual int ResolveDesiredPrewarmCount(int targetCount, int desiredPoolSize)
-    {
-        return Mathf.Clamp(targetCount, 0, desiredPoolSize);
-    }
-
-    protected virtual int ResolveDesiredGrowStep(int desiredPoolSize)
-    {
-        return Mathf.Clamp(maxSpawnPerFrame, 1, Mathf.Max(1, desiredPoolSize));
-    }
 
     protected virtual float ResolveInitialDistanceForIndex(int streamIndex)
     {
@@ -397,29 +381,19 @@ public abstract class SpawnZone : CoreEventBase
         _despawnRoutine = StartCoroutine(FlushDespawnRoutine());
     }
 
-    private void EnsureRuntimePoolCapacity(int targetCount)
+    private void PrewarmConfiguredSpawnables()
     {
         if (preset == null || !preset.HasSpawnables)
             return;
 
-        int desiredPoolSize = ResolveDesiredPoolSize(targetCount);
-        int prewarmCount = ResolveDesiredPrewarmCount(targetCount, desiredPoolSize);
-        int growStep = ResolveDesiredGrowStep(desiredPoolSize);
+        preset.GetSpawnables(_spawnablesBuffer);
 
-        var spawnables = new List<SpawnableSO>(4);
-        preset.GetSpawnables(spawnables);
-
-        for (int i = 0; i < spawnables.Count; i++)
+        for (int i = 0; i < _spawnablesBuffer.Count; i++)
         {
-            SpawnableSO spawnable = spawnables[i];
+            SpawnableSO spawnable = _spawnablesBuffer[i];
             if (spawnable == null) continue;
 
-            SpawnKit.EnsurePoolCapacity(
-                spawnable,
-                desiredPoolSize,
-                prewarmCount,
-                growStep,
-                allowGrow: true);
+            SpawnKit.Prewarm(spawnable);
         }
     }
 
