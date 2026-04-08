@@ -14,6 +14,8 @@ public class CardAddQuantitySpawnZone : SpawnZone
     private float _pathLength;
     private bool _isSubscribedToController;
 
+    protected override bool UseSequentialInitialFill => !autoFillRoadOnStart;
+
     protected override void SubscribeZoneEvents()
     {
         CoreEvents.gameStart.Subscribe(HandleGameStart, Binder);

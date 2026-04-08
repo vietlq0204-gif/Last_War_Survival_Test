@@ -129,6 +129,8 @@ public abstract class SpawnZone : CoreEventBase
         return false;
     }
 
+    protected virtual bool UseSequentialInitialFill => false;
+
     protected virtual void OnObjectsRemovedFromStream(int removedCount)
     {
         if (removedCount <= 0 || !_isRunning) return;
@@ -174,11 +176,24 @@ public abstract class SpawnZone : CoreEventBase
 
     private IEnumerator SpawnInitialFillRoutine()
     {
+        bool useSequentialInitialFill = UseSequentialInitialFill;
+
         while (_isRunning && ActiveCount < _targetSpawnCount)
         {
             int remaining = _targetSpawnCount - ActiveCount;
-            int batchCount = Mathf.Min(maxSpawnPerFrame, remaining);
-            if (SpawnBatch(ActiveCount, batchCount, useInitialDistances: true) <= 0)
+            if (useSequentialInitialFill && !CanSpawnRefillNow())
+            {
+                yield return null;
+                continue;
+            }
+
+            int batchCount = useSequentialInitialFill
+                ? 1
+                : Mathf.Min(maxSpawnPerFrame, remaining);
+            int startStreamIndex = useSequentialInitialFill ? 0 : ActiveCount;
+            bool useInitialDistances = !useSequentialInitialFill;
+
+            if (SpawnBatch(startStreamIndex, batchCount, useInitialDistances) <= 0)
             {
                 _initialFillRoutine = null;
                 yield break;

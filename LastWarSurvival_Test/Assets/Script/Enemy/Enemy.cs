@@ -10,23 +10,41 @@ public enum ObstacleSlotSelectionMode
 
 public class Enemy : ObjectSpawned
 {
-    private const string EnemyLayerName = "Enemy";
     private const string ObstacleLayerName = "Obstacle";
+    private const string FlowLogPrefix = "[HomeDamageFlow][Enemy]";
 
-    [SerializeField, Min(1)] private int maxHealth = 1;
-    [SerializeField, Min(0)] private int contactDamage = 1;
-    [SerializeField] private bool canInteractWithHomeCollider = true;
-    [SerializeField] private LayerMask despawnCollisionLayers = ~0;
+    [SerializeField, Min(1), Tooltip("Luong mau toi da cua enemy.")]
+    private int maxHealth = 1;
+    [SerializeField, Min(0), Tooltip("Luong damage enemy gay ra khi cham vao Home.")]
+    private int contactDamage = 1;
+
+    [SerializeField, Tooltip("Enemy co kha nang Despawn khi tuong tac voi cac layer duoc chon hay khong")]
+    private bool canDespawnWithLayers = true;
+    [SerializeField, Tooltip("Layer ma enemy co the Despawn.")]
+    private LayerMask DespawnLayers = ~0;
+
+    [SerializeField, Tooltip("Enemy co kha nang gay damage cho cac layer duoc chon hay khong")]
+    private bool canTakeDamageWithLayers = true;
+    [SerializeField, Tooltip("Layer ma enemy co the gay damage.")]
+    private LayerMask TakeDamageLayers = ~0;
 
     [Header("Obstacle Avoidance")]
-    [SerializeField] private LayerMask obstacleAvoidanceLayers;
-    [SerializeField] private ObstacleSlotSelectionMode obstacleSlotSelectionMode = ObstacleSlotSelectionMode.EmptyOnly;
-    [SerializeField, Min(0.05f)] private float obstacleRepositionSpeed = 5f;
-    [SerializeField, Min(0.05f)] private float obstacleSlotDistance = 0.75f;
-    [SerializeField, Min(0.05f)] private float obstacleArrivalDistance = 0.15f;
+    [SerializeField, Tooltip("Enemy co kha nang tranh ne cac layer duoc chon hay khong")]
+    private bool canObstacleAvoidanceWithLayers = true;
+    [SerializeField, Tooltip("Layer duoc xem la obstacle de enemy ne tranh va xu ly va cham.")]
+    private LayerMask AvoidanceLayers;
+    [SerializeField, Tooltip("Cach chon o luoi moi khi enemy can doi vi tri de tranh obstacle.")]
+    private ObstacleSlotSelectionMode obstacleSlotSelectionMode = ObstacleSlotSelectionMode.EmptyOnly;
+    [SerializeField, Min(0.05f), Tooltip("Toc do di chuyen cua enemy khi dang doi sang o moi de tranh obstacle.")]
+    private float obstacleRepositionSpeed = 5f;
+    [SerializeField, Min(0.05f), Tooltip("Khoang cach toi thieu de tim o moi khi enemy bi chan boi obstacle.")]
+    private float obstacleSlotDistance = 0.75f;
+    [SerializeField, Min(0.05f), Tooltip("Khoang cach coi nhu da den dich khi enemy di chuyen vao o tranh obstacle.")]
+    private float obstacleArrivalDistance = 0.15f;
 
     [Header("Debug")]
-    [SerializeField] private bool debugLifecycleLogs = true;
+    [SerializeField, Tooltip("Bat log debug cho cac moc spawn, cham Home, defeat va despawn cua enemy.")]
+    private bool debugLifecycleLogs = true;
 
     private EnemySpawner _owningSpawner;
     private Renderer[] _cachedRenderers;
@@ -45,13 +63,12 @@ public class Enemy : ObjectSpawned
     public int CurrentHealth => _currentHealth;
     public int ContactDamage => Mathf.Max(0, contactDamage);
     public bool IsAlive => !_isDead;
-    public bool CanInteractWithHomeCollider => canInteractWithHomeCollider;
+    public bool CanInteractWithHomeCollider => true;
 
     protected override void Awake()
     {
         base.Awake();
         EnsureObstacleAvoidanceLayer();
-        EnsureHitDetectionLayer();
         CacheRenderers();
     }
 
@@ -60,7 +77,7 @@ public class Enemy : ObjectSpawned
         obstacleRepositionSpeed = Mathf.Max(0.05f, obstacleRepositionSpeed);
         obstacleSlotDistance = Mathf.Max(0.05f, obstacleSlotDistance);
         obstacleArrivalDistance = Mathf.Max(0.05f, obstacleArrivalDistance);
-        // EnsureObstacleAvoidanceLayer();
+        EnsureObstacleAvoidanceLayer();
     }
 
     private void Update()
@@ -69,7 +86,6 @@ public class Enemy : ObjectSpawned
             TickObstacleSlotMove(Time.deltaTime);
     }
 
-    
     public override void OnSpawnedFromPool()
     {
         base.OnSpawnedFromPool();
@@ -81,7 +97,6 @@ public class Enemy : ObjectSpawned
         _lastHandledObstacle = null;
         _lastHandledObstacleFrame = int.MinValue;
         _currentHealth = Mathf.Max(1, maxHealth);
-        EnsureHitDetectionLayer();
         EnsureObstacleAvoidanceLayer();
         RestoreDefaultRendererStates();
         SetControlledCollisionEnabled(true);
@@ -93,7 +108,6 @@ public class Enemy : ObjectSpawned
 
     public override void OnDespawnedToPool()
     {
-        // ReleaseBlockedSlotClaim();
         _owningSpawner?.NotifyEnemyDespawned(this);
         _owningSpawner = null;
         _isDead = false;
@@ -240,26 +254,56 @@ public class Enemy : ObjectSpawned
 
     public bool CanDespawnOnCollisionLayer(int collisionLayer)
     {
-        return IsLayerIncluded(despawnCollisionLayers, collisionLayer);
+        return IsLayerAllowed(canDespawnWithLayers, DespawnLayers, collisionLayer);
+    }
+
+    public bool CanDealDamageOnCollisionLayer(int collisionLayer)
+    {
+        return IsLayerAllowed(canTakeDamageWithLayers, TakeDamageLayers, collisionLayer);
     }
 
     public bool TryResolveHomeImpact(int collisionLayer)
     {
-        if (_isDead || !gameObject.activeInHierarchy || !canInteractWithHomeCollider)
+        if (_isDead || !gameObject.activeInHierarchy)
+        {
+            LogFlow($"Rejected home impact because enemy is dead or inactive. collisionLayer={collisionLayer} ('{LayerMask.LayerToName(collisionLayer)}').", warning: true);
             return false;
+        }
 
-        if (!CanDespawnOnCollisionLayer(collisionLayer))
+        if (!CanDealDamageOnCollisionLayer(collisionLayer))
+        {
+            LogFlow(
+                $"Rejected home impact because CanDealDamageOnCollisionLayer=false. collisionLayer={collisionLayer} ('{LayerMask.LayerToName(collisionLayer)}') " +
+                $"canTakeDamageWithLayers={canTakeDamageWithLayers} takeDamageLayers={TakeDamageLayers.value}.",
+                warning: true);
             return false;
+        }
 
         EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
         if (owningSpawner != null && !owningSpawner.CanEnemiesInteractWithHomeCollider())
+        {
+            LogFlow(
+                $"Rejected home impact because owning spawner '{owningSpawner.name}' disallows home interaction while using path runtime.",
+                owningSpawner,
+                warning: true);
             return false;
+        }
 
-        LogLifecycleDebug(
-            $"[HomeImpact] Enemy accepted home collision on layer={collisionLayer}. worldPos={transform.position}, spawner='{owningSpawner?.name ?? "<null>"}'.",
+        LogFlow(
+            $"Accepted home impact. collisionLayer={collisionLayer} ('{LayerMask.LayerToName(collisionLayer)}') " +
+            $"contactDamage={ContactDamage} canDespawn={CanDespawnOnCollisionLayer(collisionLayer)} " +
+            $"worldPos={transform.position} spawner='{owningSpawner?.name ?? "<null>"}'.",
+            owningSpawner,
             warning: true);
         owningSpawner?.NotifyEnemyReachedHome(this, collisionLayer);
-        HandleHomeImpact(owningSpawner);
+
+        if (CanDespawnOnCollisionLayer(collisionLayer))
+            HandleHomeImpact(owningSpawner);
+        else
+            LogFlow(
+                $"Enemy dealt damage to Home but will stay alive because CanDespawnOnCollisionLayer=false for layer '{LayerMask.LayerToName(collisionLayer)}'.",
+                owningSpawner);
+
         return true;
     }
 
@@ -448,42 +492,29 @@ public class Enemy : ObjectSpawned
         }
     }
 
-    private void EnsureHitDetectionLayer()
-    {
-        int enemyLayer = LayerMask.NameToLayer(EnemyLayerName);
-        if (enemyLayer < 0)
-            return;
-
-        if (gameObject.layer != enemyLayer)
-            gameObject.layer = enemyLayer;
-
-        Collider[] colliders = GetComponentsInChildren<Collider>(true);
-        for (int i = 0; i < colliders.Length; i++)
-        {
-            Collider collider = colliders[i];
-            if (collider == null)
-                continue;
-
-            if (collider.gameObject.layer != enemyLayer)
-                collider.gameObject.layer = enemyLayer;
-        }
-    }
-
     private void EnsureObstacleAvoidanceLayer()
     {
-        if (obstacleAvoidanceLayers.value != 0)
+        if (AvoidanceLayers.value != 0)
             return;
 
         int obstacleLayer = LayerMask.NameToLayer(ObstacleLayerName);
         if (obstacleLayer < 0)
             return;
 
-        obstacleAvoidanceLayers = 1 << obstacleLayer;
+        AvoidanceLayers = 1 << obstacleLayer;
     }
 
     private bool IsObstacleLayer(int layer)
     {
-        return IsLayerIncluded(obstacleAvoidanceLayers, layer);
+        return IsLayerAllowed(canObstacleAvoidanceWithLayers, AvoidanceLayers, layer);
+    }
+
+    private static bool IsLayerAllowed(bool useLayerFilter, LayerMask layerMask, int layer)
+    {
+        if (!useLayerFilter)
+            return false;
+
+        return IsLayerIncluded(layerMask, layer);
     }
 
     private static bool IsLayerIncluded(LayerMask layerMask, int layer)
@@ -504,5 +535,18 @@ public class Enemy : ObjectSpawned
             Debug.LogWarning(formattedMessage, this);
         else
             Debug.Log(formattedMessage, this);
+    }
+
+    private void LogFlow(string message, Object context = null, bool warning = false)
+    {
+        if (!debugLifecycleLogs)
+            return;
+
+        string formattedMessage = $"{FlowLogPrefix}[{name}#{CachedEntityId}] {message}";
+        Object resolvedContext = context != null ? context : this;
+        if (warning)
+            Debug.LogWarning(formattedMessage, resolvedContext);
+        else
+            Debug.Log(formattedMessage, resolvedContext);
     }
 }

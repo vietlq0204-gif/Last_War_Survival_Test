@@ -4,10 +4,14 @@ using UnityEngine;
 [DisallowMultipleComponent]
 public sealed class TeammateController : CoreEventBase
 {
+    private const string FlowLogPrefix = "[HomeDamageFlow][TeammateController]";
+
     [Header("Team Health")]
     [SerializeField, Min(1)] private int healthPerTeammate = 1;
     [SerializeField, Min(1)] private int teammateDespawnBatchSize = 8;
+    [SerializeField] private bool onlyUseDamageResponseLayerFilter = false;
     [SerializeField] private LayerMask damageResponseLayers = ~0;
+    [SerializeField] private bool debugDamageFlowLogs = true;
 
     [Header("Weapon")]
     [SerializeField] private WeaponSO defaultGun;
@@ -53,6 +57,7 @@ public sealed class TeammateController : CoreEventBase
 
     public override void SubscribeEvents()
     {
+        LogFlow("Subscribing to enemyHomeDamageBatch and teammateWeaponPickup.");
         CoreEvents.enemyHomeDamageBatch.Subscribe(HandleEnemyHomeDamageBatchEvent, Binder);
         CoreEvents.teammateWeaponPickup.Subscribe(HandleTeammateWeaponPickupEvent, Binder);
     }
@@ -70,6 +75,9 @@ public sealed class TeammateController : CoreEventBase
         _activeTeammates.Add(teammate);
         _currentHealth = Mathf.Max(0, _currentHealth) + ResolveHealthPerTeammate();
         ClampCurrentHealthToCapacity();
+        LogFlow(
+            $"Registered teammate='{teammate.name}#{teammateId}'. activeCount={_activeTeammates.Count} currentHealth={_currentHealth} maxHealth={MaxHealth}.",
+            teammate);
     }
 
     public void NotifyTeammateDespawned(Teammate teammate)
@@ -94,6 +102,9 @@ public sealed class TeammateController : CoreEventBase
         }
 
         ClampCurrentHealthToCapacity();
+        LogFlow(
+            $"Notified teammate despawn teammate='{teammate.name}#{teammateId}'. activeCount={_activeTeammates.Count} currentHealth={_currentHealth} maxHealth={MaxHealth}.",
+            teammate);
     }
 
     public void EquipWeapon(WeaponSO weapon)
@@ -111,6 +122,9 @@ public sealed class TeammateController : CoreEventBase
             return false;
 
         _pendingIncomingDamage = AddClamped(_pendingIncomingDamage, damage);
+        LogFlow(
+            $"Queued incoming damage damage={damage} pendingIncomingDamage={_pendingIncomingDamage} activeCount={_activeTeammates.Count} currentHealth={_currentHealth}.",
+            warning: true);
         return true;
     }
 
@@ -119,7 +133,16 @@ public sealed class TeammateController : CoreEventBase
         if (damageBatchEvent == null || damageBatchEvent.totalDamage <= 0)
             return;
 
-        if (!CanDespawnFromCollisionLayer(damageBatchEvent.collisionLayer))
+        bool canApplyDamage = CanDespawnFromCollisionLayer(damageBatchEvent.collisionLayer);
+        LogFlow(
+            $"Received EnemyHomeDamageBatchEvent totalDamage={damageBatchEvent.totalDamage} enemyHitCount={damageBatchEvent.enemyHitCount} " +
+            $"collisionLayer={damageBatchEvent.collisionLayer} ('{LayerMask.LayerToName(damageBatchEvent.collisionLayer)}') " +
+            $"onlyUseDamageResponseLayerFilter={onlyUseDamageResponseLayerFilter} damageResponseLayers={damageResponseLayers.value} " +
+            $"canApplyDamage={canApplyDamage} activeCount={_activeTeammates.Count} currentHealth={_currentHealth}.",
+            damageBatchEvent.sourceSpawner,
+            warning: !canApplyDamage);
+
+        if (!canApplyDamage)
             return;
 
         QueueIncomingDamage(damageBatchEvent.totalDamage);
@@ -144,6 +167,9 @@ public sealed class TeammateController : CoreEventBase
 
         if (_activeTeammates.Count <= 0)
         {
+            LogFlow(
+                $"Dropping pending damage because there are no active teammates. pendingIncomingDamage={_pendingIncomingDamage}.",
+                warning: true);
             _pendingIncomingDamage = 0;
             _currentHealth = 0;
             return;
@@ -151,6 +177,7 @@ public sealed class TeammateController : CoreEventBase
 
         int damageToApply = _pendingIncomingDamage;
         _pendingIncomingDamage = 0;
+        LogFlow($"Processing pending damage damageToApply={damageToApply} currentHealthBefore={_currentHealth} activeCount={_activeTeammates.Count}.", warning: true);
         ApplyIncomingDamage(damageToApply);
     }
 
@@ -160,6 +187,7 @@ public sealed class TeammateController : CoreEventBase
             return;
 
         ClampCurrentHealthToCapacity();
+        int currentHealthBefore = _currentHealth;
         _currentHealth = Mathf.Max(0, _currentHealth - damage);
 
         int healthUnit = ResolveHealthPerTeammate();
@@ -168,6 +196,10 @@ public sealed class TeammateController : CoreEventBase
             : Mathf.Clamp(Mathf.CeilToInt(_currentHealth / (float)healthUnit), 0, _activeTeammates.Count);
 
         int despawnCount = Mathf.Max(0, _activeTeammates.Count - desiredAliveCount);
+        LogFlow(
+            $"Applied incoming damage damage={damage} currentHealthBefore={currentHealthBefore} currentHealthAfter={_currentHealth} " +
+            $"healthPerTeammate={healthUnit} activeCountBefore={_activeTeammates.Count} desiredAliveCount={desiredAliveCount} despawnCount={despawnCount}.",
+            warning: despawnCount > 0);
         QueueTeammatesForDamageDespawn(despawnCount);
         ClampCurrentHealthToCapacity();
     }
@@ -187,7 +219,13 @@ public sealed class TeammateController : CoreEventBase
             _activeTeammateIds.Remove(teammateId);
 
             if (_pendingDamageDespawnIds.Add(teammateId))
+            {
                 _pendingDamageDespawns.Enqueue(teammate);
+                LogFlow(
+                    $"Queued teammate for despawn teammate='{teammate.name}#{teammateId}' pendingQueueCount={_pendingDamageDespawns.Count} remainingActiveCount={_activeTeammates.Count}.",
+                    teammate,
+                    warning: true);
+            }
 
             count--;
         }
@@ -205,9 +243,17 @@ public sealed class TeammateController : CoreEventBase
             if (!teammate.BeginQueuedDamageDespawn())
             {
                 _pendingDamageDespawnIds.Remove(teammate.CachedEntityId);
+                LogFlow(
+                    $"BeginQueuedDamageDespawn returned false for teammate='{teammate.name}#{teammate.CachedEntityId}'.",
+                    teammate,
+                    warning: true);
                 continue;
             }
 
+            LogFlow(
+                $"Sending teammate='{teammate.name}#{teammate.CachedEntityId}' to BufferedPoolDespawnQueue.",
+                teammate,
+                warning: true);
             BufferedPoolDespawnQueue.Queue(teammate);
         }
     }
@@ -224,10 +270,26 @@ public sealed class TeammateController : CoreEventBase
 
     private bool CanDespawnFromCollisionLayer(int collisionLayer)
     {
+        if (!onlyUseDamageResponseLayerFilter)
+            return true;
+
         if (collisionLayer < 0 || collisionLayer > 31)
             return false;
 
         return (damageResponseLayers.value & (1 << collisionLayer)) != 0;
+    }
+
+    private void LogFlow(string message, Object context = null, bool warning = false)
+    {
+        if (!debugDamageFlowLogs)
+            return;
+
+        string formattedMessage = $"{FlowLogPrefix}[{name}] {message}";
+        Object resolvedContext = context != null ? context : this;
+        if (warning)
+            Debug.LogWarning(formattedMessage, resolvedContext);
+        else
+            Debug.Log(formattedMessage, resolvedContext);
     }
 
     private void ApplyEquippedWeapon()

@@ -41,6 +41,7 @@ public sealed class BulletSpawner : MonoBehaviour
 
     [Header("Hit Detection")]
     [SerializeField] private LayerMask targetLayers = (1 << 6) | (1 << 7);
+    [SerializeField] private LayerMask obstacleLayers;
     [SerializeField, Min(1)] private int hitBufferSize = 8;
 
     private readonly List<GameObject> _spawnBuffer = new List<GameObject>(64);
@@ -437,7 +438,7 @@ public sealed class BulletSpawner : MonoBehaviour
             return false;
 
         float nearestDistance = float.PositiveInfinity;
-        bool foundEnemy = false;
+        bool foundHit = false;
 
         for (int i = 0; i < hitCount; i++)
         {
@@ -453,22 +454,22 @@ public sealed class BulletSpawner : MonoBehaviour
                 hitPoint = hit.point;
                 hitEnemy = resolvedEnemy;
                 hitObstacle = null;
-                foundEnemy = true;
+                foundHit = true;
                 continue;
             }
 
-            Obstacle resolvedObstacle = ResolveObstacleFromCollider(hitCollider);
-            if (resolvedObstacle == null)
+            if (!IsObstacleCollisionLayer(hitCollider.gameObject.layer))
                 continue;
 
+            Obstacle resolvedObstacle = ResolveObstacleFromCollider(hitCollider);
             nearestDistance = hit.distance;
             hitPoint = hit.point;
             hitEnemy = null;
             hitObstacle = resolvedObstacle;
-            foundEnemy = true;
+            foundHit = true;
         }
 
-        return foundEnemy;
+        return foundHit;
     }
 
     private bool IsRuntimeValid(ActiveBulletRuntime runtime)
@@ -974,7 +975,25 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private int ResolveHitLayerMask()
     {
-        return targetLayers.value != 0 ? targetLayers.value : Physics.AllLayers;
+        int resolvedTargetLayers = targetLayers.value != 0 ? targetLayers.value : Physics.AllLayers;
+        return resolvedTargetLayers | ResolveObstacleLayerMask();
+    }
+
+    private int ResolveObstacleLayerMask()
+    {
+        if (obstacleLayers.value != 0)
+            return obstacleLayers.value;
+
+        int obstacleLayer = LayerMask.NameToLayer("Obstacle");
+        return obstacleLayer >= 0 ? 1 << obstacleLayer : 0;
+    }
+
+    private bool IsObstacleCollisionLayer(int layer)
+    {
+        if (layer < 0 || layer > 31)
+            return false;
+
+        return (ResolveObstacleLayerMask() & (1 << layer)) != 0;
     }
 
     private static Transform ResolveTaggedTransform(Collider other, string requiredTag)

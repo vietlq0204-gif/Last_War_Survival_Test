@@ -7,12 +7,14 @@ using Vit.SpawnKit.Algorithms;
 /// </summary>
 public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
 {
+    private const string FlowLogPrefix = "[HomeDamageFlow][Teammate]";
     private static readonly HashSet<Teammate> ActivePickupCollectors = new HashSet<Teammate>();
 
     [SerializeField, Min(0f)] private float defaultMoveToSlotDuration = 0.25f;
     [SerializeField, Min(0f)] private float slotPositionTolerance = 0.01f;
     [SerializeField, Min(0f)] private float slotRotationTolerance = 0.5f;
     [SerializeField] private AnimationCurve moveToSlotCurve = AnimationCurve.EaseInOut(0f, 0f, 1f, 1f);
+    [SerializeField] private bool debugDamageLifecycleLogs = true;
 
     private TeammateSpawner _owningSpawner;
     private ColliderSurfaceGridAlgorithm _assignedSlotAlgorithm;
@@ -86,6 +88,7 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
 
     public override void OnDespawnedToPool()
     {
+        LogFlow("OnDespawnedToPool invoked.");
         ActivePickupCollectors.Remove(this);
         _owningSpawner?.NotifyTeammateDespawned(this);
         _owningSpawner = null;
@@ -121,13 +124,19 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
     public bool BeginQueuedDamageDespawn()
     {
         if (_isQueuedForDamageDespawn || !gameObject.activeInHierarchy)
+        {
+            LogFlow(
+                $"BeginQueuedDamageDespawn rejected. isQueuedForDamageDespawn={_isQueuedForDamageDespawn} activeInHierarchy={gameObject.activeInHierarchy}.",
+                warning: true);
             return false;
+        }
 
         _isQueuedForDamageDespawn = true;
         ActivePickupCollectors.Remove(this);
         ReleaseGridReservation();
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
+        LogFlow("BeginQueuedDamageDespawn accepted. Collider disabled and renderers hidden.", warning: true);
         return true;
     }
 
@@ -219,5 +228,17 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
 
             cachedRenderer.enabled = isVisible && _defaultRendererStates[i];
         }
+    }
+
+    private void LogFlow(string message, bool warning = false)
+    {
+        if (!debugDamageLifecycleLogs)
+            return;
+
+        string formattedMessage = $"{FlowLogPrefix}[{name}#{CachedEntityId}] {message}";
+        if (warning)
+            Debug.LogWarning(formattedMessage, this);
+        else
+            Debug.Log(formattedMessage, this);
     }
 }

@@ -5,6 +5,8 @@ using Vit.SpawnKit.Components;
 
 public class EnemySpawner : SpawnGridQueue
 {
+    private const string FlowLogPrefix = "[HomeDamageFlow][Spawner]";
+
     [Header("Enemy Grid")]
     [Tooltip("Collider used to test whether this grid still contains active enemy objects. If empty, the grid zone collider or local collider is used.")]
     [SerializeField] private Collider occupancyCollider;
@@ -214,17 +216,24 @@ public class EnemySpawner : SpawnGridQueue
         _pendingHomeHitCount = AddClamped(_pendingHomeHitCount, 1);
         _pendingHomeCollisionLayer = collisionLayer;
 
+        LogFlow(
+            $"Queued home damage from enemy='{GetEnemyLabel(enemy)}' contactDamage={enemy.ContactDamage} " +
+            $"collisionLayer={collisionLayer} ('{LayerMask.LayerToName(collisionLayer)}') " +
+            $"pendingDamage={_pendingHomeDamage} pendingHitCount={_pendingHomeHitCount}.",
+            enemy,
+            warning: true);
+
         if (_homeDamageDispatchFrame < 0)
             _homeDamageDispatchFrame = Time.frameCount + Mathf.Max(0, homeDamageDispatchDelayFrames);
+
+        LogFlow(
+            $"homeDamageDispatchFrame={_homeDamageDispatchFrame} currentFrame={Time.frameCount} delayFrames={homeDamageDispatchDelayFrames}.",
+            enemy);
     }
 
     public bool CanEnemiesInteractWithHomeCollider()
     {
-        if (allowHomeImpactWhileUsingPathRuntime)
-            return true;
-
-        EnemyGridGroup owningGroup = ResolveOwningGroup();
-        return owningGroup == null || !owningGroup.UsesPathRuntime;
+        return true;
     }
 
     public bool Intersects(Collider other)
@@ -503,7 +512,17 @@ public class EnemySpawner : SpawnGridQueue
             return;
 
         if (!forceImmediate && _homeDamageDispatchFrame >= 0 && Time.frameCount < _homeDamageDispatchFrame)
+        {
+            LogFlow(
+                $"Waiting to flush home damage. currentFrame={Time.frameCount} targetFrame={_homeDamageDispatchFrame} " +
+                $"pendingDamage={_pendingHomeDamage} pendingHitCount={_pendingHomeHitCount}.");            
             return;
+        }
+
+        LogFlow(
+            $"Raising EnemyHomeDamageBatchEvent totalDamage={_pendingHomeDamage} enemyHitCount={_pendingHomeHitCount} " +
+            $"collisionLayer={_pendingHomeCollisionLayer} ('{LayerMask.LayerToName(_pendingHomeCollisionLayer)}') forceImmediate={forceImmediate}.",
+            warning: true);
 
         CoreEvents.enemyHomeDamageBatch.Raise(new EnemyHomeDamageBatchEvent(
             this,
@@ -876,6 +895,19 @@ public class EnemySpawner : SpawnGridQueue
         string formattedMessage = $"[EnemySpawner:{name}] {message}";
         Object resolvedContext = context != null ? context : this;
 
+        if (warning)
+            Debug.LogWarning(formattedMessage, resolvedContext);
+        else
+            Debug.Log(formattedMessage, resolvedContext);
+    }
+
+    private void LogFlow(string message, Object context = null, bool warning = false)
+    {
+        if (!debugLifecycleLogs)
+            return;
+
+        string formattedMessage = $"{FlowLogPrefix}[{name}] {message}";
+        Object resolvedContext = context != null ? context : this;
         if (warning)
             Debug.LogWarning(formattedMessage, resolvedContext);
         else
