@@ -69,6 +69,7 @@ public class Enemy : ObjectSpawned
             TickObstacleSlotMove(Time.deltaTime);
     }
 
+    
     public override void OnSpawnedFromPool()
     {
         base.OnSpawnedFromPool();
