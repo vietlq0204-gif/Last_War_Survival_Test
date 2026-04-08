@@ -29,6 +29,12 @@ public class EnemySpawner : SpawnGridQueue
     [Header("Home Damage Batch")]
     [SerializeField, Min(0)] private int homeDamageDispatchDelayFrames = 2;
 
+    [Header("Home Impact")]
+    [SerializeField] private bool allowHomeImpactWhileUsingPathRuntime;
+
+    [Header("Debug")]
+    [SerializeField] private bool debugLifecycleLogs = true;
+
     private ColliderSurfaceGridZone _cachedGridZone;
     private Collider[] _overlapBuffer;
     private readonly HashSet<EntityId> _aliveEnemyIds = new HashSet<EntityId>();
@@ -101,6 +107,19 @@ public class EnemySpawner : SpawnGridQueue
             return;
 
         ReassignActiveEnemiesToSlots(algorithm);
+        FillAvailableSlots();
+    }
+
+    public void RealignActiveEnemiesAndFillAvailableSlots()
+    {
+        ResetBlockedSlots();
+        _nextObstacleProbeStartIndex = 0;
+
+        ColliderSurfaceGridAlgorithm algorithm = ResolveGridAlgorithm();
+        if (algorithm == null)
+            return;
+
+        RebindActiveEnemiesToFreshSlots(algorithm);
         FillAvailableSlots();
     }
 
@@ -195,6 +214,15 @@ public class EnemySpawner : SpawnGridQueue
 
         if (_homeDamageDispatchFrame < 0)
             _homeDamageDispatchFrame = Time.frameCount + Mathf.Max(0, homeDamageDispatchDelayFrames);
+    }
+
+    public bool CanEnemiesInteractWithHomeCollider()
+    {
+        if (allowHomeImpactWhileUsingPathRuntime)
+            return true;
+
+        EnemyGridGroup owningGroup = ResolveOwningGroup();
+        return owningGroup == null || !owningGroup.UsesPathRuntime;
     }
 
     public bool Intersects(Collider other)
@@ -657,13 +685,61 @@ public class EnemySpawner : SpawnGridQueue
             if (TryAssignEnemyToAvailableSlot(algorithm, enemy))
                 continue;
 
+            LogLifecycleDebug(
+                $"[Overflow] Enemy '{GetEnemyLabel(enemy)}' could not be reassigned to any slot. " +
+                $"activeAlive={_activeEnemiesBuffer.Count}, occupiedSlots={algorithm.OccupiedSlotCount}, availableSlots={algorithm.GetAvailableSlotCount()}, " +
+                $"worldPos={enemy.transform.position}, localPos={enemy.transform.localPosition}.",
+                enemy,
+                warning: true);
             _overflowEnemiesBuffer.Add(enemy);
         }
 
         for (int i = 0; i < _overflowEnemiesBuffer.Count; i++)
         {
             Enemy overflowEnemy = _overflowEnemiesBuffer[i];
-            overflowEnemy?.DespawnForRecycle();
+            overflowEnemy?.DespawnForRecycle("Overflow");
+        }
+    }
+
+    private void RebindActiveEnemiesToFreshSlots(ColliderSurfaceGridAlgorithm algorithm)
+    {
+        _activeEnemiesBuffer.Clear();
+        _overflowEnemiesBuffer.Clear();
+
+        CollectActiveAliveEnemies(_activeEnemiesBuffer);
+
+        for (int i = 0; i < _activeEnemiesBuffer.Count; i++)
+        {
+            Enemy enemy = _activeEnemiesBuffer[i];
+            if (enemy == null)
+                continue;
+
+            if (enemy.TryGetComponent(out SpawnGridSlotReservation reservation) && reservation.IsBound)
+                reservation.ReleaseReservationNow();
+        }
+
+        for (int i = 0; i < _activeEnemiesBuffer.Count; i++)
+        {
+            Enemy enemy = _activeEnemiesBuffer[i];
+            if (enemy == null)
+                continue;
+
+            if (TryAssignEnemyToAvailableSlot(algorithm, enemy))
+                continue;
+
+            LogLifecycleDebug(
+                $"[OverflowAfterRebind] Enemy '{GetEnemyLabel(enemy)}' could not be assigned after clearing all old reservations. " +
+                $"activeAlive={_activeEnemiesBuffer.Count}, occupiedSlots={algorithm.OccupiedSlotCount}, availableSlots={algorithm.GetAvailableSlotCount()}, " +
+                $"worldPos={enemy.transform.position}, localPos={enemy.transform.localPosition}.",
+                enemy,
+                warning: true);
+            _overflowEnemiesBuffer.Add(enemy);
+        }
+
+        for (int i = 0; i < _overflowEnemiesBuffer.Count; i++)
+        {
+            Enemy overflowEnemy = _overflowEnemiesBuffer[i];
+            overflowEnemy?.DespawnForRecycle("OverflowAfterRebind");
         }
     }
 
@@ -700,6 +776,10 @@ public class EnemySpawner : SpawnGridQueue
 
         if (!algorithm.TryGetPlacementPose(reservation.SlotKey, out Vector3 worldPosition, out Quaternion worldRotation))
         {
+            LogLifecycleDebug(
+                $"[ReservationLost] Enemy '{GetEnemyLabel(enemy)}' has slotKey={reservation.SlotKey} but the slot pose can no longer be resolved. Releasing reservation.",
+                enemy,
+                warning: true);
             reservation.ReleaseReservationNow();
             return false;
         }
@@ -720,7 +800,14 @@ public class EnemySpawner : SpawnGridQueue
             return false;
 
         if (!algorithm.TryGetNearestAvailablePlacement(enemy.transform.position, null, out ColliderSurfaceGridPlacement placement))
+        {
+            LogLifecycleDebug(
+                $"[NoFreeSlot] Enemy '{GetEnemyLabel(enemy)}' could not find any available placement near worldPos={enemy.transform.position}. " +
+                $"occupiedSlots={algorithm.OccupiedSlotCount}, availableSlots={algorithm.GetAvailableSlotCount()}.",
+                enemy,
+                warning: true);
             return false;
+        }
 
         algorithm.BindReservation(enemy.gameObject, in placement);
 
@@ -760,5 +847,27 @@ public class EnemySpawner : SpawnGridQueue
 
         long total = (long)Mathf.Max(0, currentValue) + delta;
         return total > int.MaxValue ? int.MaxValue : (int)total;
+    }
+
+    private void LogLifecycleDebug(string message, Object context = null, bool warning = false)
+    {
+        if (!debugLifecycleLogs)
+            return;
+
+        string formattedMessage = $"[EnemySpawner:{name}] {message}";
+        Object resolvedContext = context != null ? context : this;
+
+        if (warning)
+            Debug.LogWarning(formattedMessage, resolvedContext);
+        else
+            Debug.Log(formattedMessage, resolvedContext);
+    }
+
+    private static string GetEnemyLabel(Enemy enemy)
+    {
+        if (enemy == null)
+            return "<null>";
+
+        return $"{enemy.name}#{enemy.CachedEntityId}";
     }
 }

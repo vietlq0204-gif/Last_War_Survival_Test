@@ -25,6 +25,9 @@ public class Enemy : ObjectSpawned
     [SerializeField, Min(0.05f)] private float obstacleSlotDistance = 0.75f;
     [SerializeField, Min(0.05f)] private float obstacleArrivalDistance = 0.15f;
 
+    [Header("Debug")]
+    [SerializeField] private bool debugLifecycleLogs = true;
+
     private EnemySpawner _owningSpawner;
     private Renderer[] _cachedRenderers;
     private bool[] _defaultRendererStates;
@@ -132,11 +135,14 @@ public class Enemy : ObjectSpawned
         transform.localRotation = localRotation;
     }
 
-    public void DespawnForRecycle()
+    public void DespawnForRecycle(string reason = "Recycle")
     {
         if (_isDead || !gameObject.activeInHierarchy)
             return;
 
+        LogLifecycleDebug(
+            $"[{reason}] Enemy is being queued for pool despawn. worldPos={transform.position}, localPos={transform.localPosition}, parent='{transform.parent?.name ?? "<null>"}'.",
+            warning: true);
         _isDead = true;
         _currentHealth = 0;
         _isMovingToObstacleSlot = false;
@@ -242,6 +248,12 @@ public class Enemy : ObjectSpawned
             return false;
 
         EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
+        if (owningSpawner != null && !owningSpawner.CanEnemiesInteractWithHomeCollider())
+            return false;
+
+        LogLifecycleDebug(
+            $"[HomeImpact] Enemy accepted home collision on layer={collisionLayer}. worldPos={transform.position}, spawner='{owningSpawner?.name ?? "<null>"}'.",
+            warning: true);
         owningSpawner?.NotifyEnemyReachedHome(this, collisionLayer);
         HandleHomeImpact(owningSpawner);
         return true;
@@ -280,6 +292,9 @@ public class Enemy : ObjectSpawned
         if (_isDead)
             return;
 
+        LogLifecycleDebug(
+            $"[HomeImpact] Enemy is being despawned after hitting Home. worldPos={transform.position}, currentParent='{transform.parent?.name ?? "<null>"}'.",
+            warning: true);
         _isDead = true;
         _currentHealth = 0;
         _isMovingToObstacleSlot = false;
@@ -466,5 +481,17 @@ public class Enemy : ObjectSpawned
             return false;
 
         return (layerMask.value & (1 << layer)) != 0;
+    }
+
+    private void LogLifecycleDebug(string message, bool warning = false)
+    {
+        if (!debugLifecycleLogs)
+            return;
+
+        string formattedMessage = $"[Enemy:{name}#{CachedEntityId}] {message}";
+        if (warning)
+            Debug.LogWarning(formattedMessage, this);
+        else
+            Debug.Log(formattedMessage, this);
     }
 }

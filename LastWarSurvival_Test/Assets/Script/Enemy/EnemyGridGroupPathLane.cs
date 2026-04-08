@@ -17,6 +17,7 @@ public class EnemyGridGroupPathLane : CoreEventBase
         public EnemyGridGroup group;
         public EnemySpawner grid;
         public float requiredGap;
+        public bool isRecycle;
     }
 
     [Tooltip("PointBaker providing the path used by the enemy grid groups.")]
@@ -170,7 +171,8 @@ public class EnemyGridGroupPathLane : CoreEventBase
             {
                 group = _plannedGridSpawns[i].group,
                 grid = _plannedGridSpawns[i].grid,
-                requiredGap = requiredGap
+                requiredGap = requiredGap,
+                isRecycle = false
             });
         }
 
@@ -194,7 +196,8 @@ public class EnemyGridGroupPathLane : CoreEventBase
         {
             group = group,
             grid = grid,
-            requiredGap = ResolveRequiredGapFor(group)
+            requiredGap = ResolveRequiredGapFor(group),
+            isRecycle = true
         });
 
         TryFlushPendingGridSpawns();
@@ -316,7 +319,15 @@ public class EnemyGridGroupPathLane : CoreEventBase
         _entriesBuffer.Clear();
         _entriesBuffer.Add(entry);
         pathController.RegisterSpawnedBatch(_entriesBuffer);
-        pendingSpawn.grid.FillAvailableSlots();
+
+        // The grid is teleported and re-registered on the path in the same frame.
+        // Sync physics transforms so collider-based slot queries see the new world pose.
+        Physics.SyncTransforms();
+
+        if (pendingSpawn.isRecycle)
+            pendingSpawn.grid.RealignActiveEnemiesAndFillAvailableSlots();
+        else
+            pendingSpawn.grid.FillAvailableSlots();
     }
 
     private void RequestNextSpawnWindow(float requiredGap)

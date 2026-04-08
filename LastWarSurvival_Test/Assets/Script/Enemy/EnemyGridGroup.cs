@@ -35,6 +35,8 @@ public class EnemyGridGroup : ObjectSpawned
     private float _pathStartDistance;
     private EntityId _pathSpawnZoneId;
 
+    public bool UsesPathRuntime => _pathController != null;
+
     protected override void Awake()
     {
         base.Awake();
