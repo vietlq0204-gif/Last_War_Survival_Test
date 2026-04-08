@@ -55,7 +55,6 @@ public sealed class BulletSpawner : MonoBehaviour
     private Collider[] _homeOverlapBuffer = new Collider[8];
 
     private float _nextFireTime;
-    private int _preparedPoolSize;
     private SpawnableSO _preparedPoolSpawnable;
     private SpawnManager _cachedSpawnManager;
     private WeaponSO _equippedWeapon;
@@ -178,10 +177,7 @@ public sealed class BulletSpawner : MonoBehaviour
 
         SpawnableSO activeSpawnable = ResolveActiveBulletSpawnable();
         if (_preparedPoolSpawnable != activeSpawnable)
-        {
             _preparedPoolSpawnable = activeSpawnable;
-            _preparedPoolSize = 0;
-        }
     }
 
     private void HandleHomeInteraction(HomeInteractionEvent interactionEvent)
@@ -627,27 +623,10 @@ public sealed class BulletSpawner : MonoBehaviour
             return;
 
         if (_preparedPoolSpawnable != activeSpawnable)
-        {
             _preparedPoolSpawnable = activeSpawnable;
-            _preparedPoolSize = 0;
-        }
 
-        int desiredPoolSize = Mathf.Max(1, ResolveActiveMaxActiveBullets());
-        if (desiredPoolSize <= _preparedPoolSize)
-            return;
-
-        int prewarmCount = prewarmPoolOnStart ? desiredPoolSize : Mathf.Min(desiredPoolSize, Mathf.Max(1, ResolveSafeMaxVolleyCount()));
-        int growStep = Mathf.Max(1, ResolveSafeMaxVolleyCount());
-
-        if (!SpawnKit.EnsurePoolCapacity(
-                activeSpawnable,
-                desiredPoolSize,
-                prewarmCount,
-                growStep,
-                allowGrow: false))
-            return;
-
-        _preparedPoolSize = desiredPoolSize;
+        if (prewarmPoolOnStart)
+            SpawnKit.Prewarm(activeSpawnable);
     }
 
     private int ResolveSafeMaxVolleyCount()
