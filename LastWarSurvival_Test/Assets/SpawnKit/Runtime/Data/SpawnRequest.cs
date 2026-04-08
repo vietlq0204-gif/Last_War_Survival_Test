@@ -13,6 +13,7 @@ namespace Vit.SpawnKit.Data
     public readonly struct SpawnRequest
     {
         public readonly SpawnableSO spawnable;
+        public readonly SpawnableSO[] spawnables;
         public readonly SpawnKey key;
         public readonly int count;
         public readonly Transform parent;
@@ -20,6 +21,7 @@ namespace Vit.SpawnKit.Data
         public readonly uint seed;
         public readonly SpawnLifecycle lifecycle;
         public readonly bool overrideLifecycle;
+        public readonly int[] spawnablePlan;
         public readonly int[] variantPlan;
 
         public SpawnRequest(
@@ -32,6 +34,7 @@ namespace Vit.SpawnKit.Data
             int[] variantPlan = null)
         {
             this.spawnable = spawnable;
+            this.spawnables = null;
             this.key = spawnable != null ? spawnable.key : default;
             this.count = count;
             this.parent = parent;
@@ -39,6 +42,30 @@ namespace Vit.SpawnKit.Data
             this.seed = seed;
             this.overrideLifecycle = lifecycle.HasValue;
             this.lifecycle = lifecycle ?? SpawnLifecycle.Manual;
+            this.spawnablePlan = null;
+            this.variantPlan = variantPlan;
+        }
+
+        public SpawnRequest(
+            SpawnableSO[] spawnables,
+            int count,
+            Transform parent,
+            ISpawnAlgorithm algorithm,
+            uint seed = 0,
+            SpawnLifecycle? lifecycle = null,
+            int[] spawnablePlan = null,
+            int[] variantPlan = null)
+        {
+            this.spawnable = null;
+            this.spawnables = spawnables;
+            this.key = default;
+            this.count = count;
+            this.parent = parent;
+            this.algorithm = algorithm;
+            this.seed = seed;
+            this.overrideLifecycle = lifecycle.HasValue;
+            this.lifecycle = lifecycle ?? SpawnLifecycle.Manual;
+            this.spawnablePlan = spawnablePlan;
             this.variantPlan = variantPlan;
         }
 
@@ -52,6 +79,7 @@ namespace Vit.SpawnKit.Data
             int[] variantPlan = null)
         {
             this.spawnable = null;
+            this.spawnables = null;
             this.key = key;
             this.count = count;
             this.parent = parent;
@@ -59,6 +87,7 @@ namespace Vit.SpawnKit.Data
             this.seed = seed;
             this.overrideLifecycle = lifecycle.HasValue;
             this.lifecycle = lifecycle ?? SpawnLifecycle.Manual;
+            this.spawnablePlan = null;
             this.variantPlan = variantPlan;
         }
 
@@ -77,6 +106,62 @@ namespace Vit.SpawnKit.Data
                 new FixedPoseAlgorithm(position, rotation),
                 seed,
                 lifecycle);
+        }
+
+        public SpawnableSO ResolveSpawnableAt(int spawnIndex)
+        {
+            if (spawnable != null) return spawnable;
+            if (spawnables == null || spawnables.Length == 0) return null;
+
+            if (spawnablePlan == null)
+                return spawnables[0];
+
+            if (spawnIndex < 0 || spawnIndex >= spawnablePlan.Length)
+                return null;
+
+            int plannedIndex = spawnablePlan[spawnIndex];
+            return plannedIndex >= 0 && plannedIndex < spawnables.Length
+                ? spawnables[plannedIndex]
+                : null;
+        }
+
+        public int CollectSpawnableCounts(Dictionary<SpawnableSO, int> results)
+        {
+            if (results == null) return 0;
+
+            results.Clear();
+            if (count <= 0) return 0;
+
+            if (spawnable != null)
+            {
+                results[spawnable] = count;
+                return count;
+            }
+
+            if (spawnables == null || spawnables.Length == 0)
+                return 0;
+
+            if (spawnablePlan == null)
+            {
+                if (spawnables[0] == null) return 0;
+
+                results[spawnables[0]] = count;
+                return count;
+            }
+
+            int total = 0;
+            int plannedCount = Mathf.Min(count, spawnablePlan.Length);
+            for (int i = 0; i < plannedCount; i++)
+            {
+                var plannedSpawnable = ResolveSpawnableAt(i);
+                if (plannedSpawnable == null) continue;
+
+                results.TryGetValue(plannedSpawnable, out int currentCount);
+                results[plannedSpawnable] = currentCount + 1;
+                total++;
+            }
+
+            return total;
         }
     }
 

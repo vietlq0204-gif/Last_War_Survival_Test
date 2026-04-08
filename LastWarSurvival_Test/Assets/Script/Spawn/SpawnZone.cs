@@ -34,7 +34,6 @@ public abstract class SpawnZone : CoreEventBase
     private int _pendingRefillCount;
     private Transform _resolvedSpawnParent;
     private FixedPoseAlgorithm _spawnAlgorithm;
-    private SpawnLifecycle? _cachedLifecycleOverride;
 
     protected PointBaker PointBaker => pointBaker;
     protected EntityId SpawnZoneId => _spawnZoneId;
@@ -98,12 +97,11 @@ public abstract class SpawnZone : CoreEventBase
     {
         ResolvePointBaker();
 
-        if (preset == null || preset.spawnable == null) return false;
+        if (preset == null || !preset.HasSpawnables) return false;
         if (!TryResolveSpawnPose(out var position, out var rotation)) return false;
 
         _resolvedSpawnParent = ResolveSpawnParent();
         _spawnAlgorithm = new FixedPoseAlgorithm(position, rotation);
-        _cachedLifecycleOverride = ResolveLifecycleOverride();
 
         EnsureRuntimePoolCapacity(targetCount);
         return true;
@@ -290,18 +288,15 @@ public abstract class SpawnZone : CoreEventBase
 
     private int SpawnBatch(int startStreamIndex, int batchCount, bool useInitialDistances)
     {
-        if (batchCount <= 0 || preset == null || preset.spawnable == null || _spawnAlgorithm == null)
+        if (batchCount <= 0 || preset == null || !preset.HasSpawnables || _spawnAlgorithm == null)
+            return 0;
+
+        SpawnRequest request = preset.CreateRequest(batchCount, _spawnAlgorithm, _resolvedSpawnParent);
+        if (request.count <= 0)
             return 0;
 
         _spawnResultsBuffer.Clear();
-        int spawnedCount = SpawnKit.SpawnNonAlloc(
-            preset.spawnable,
-            batchCount,
-            _spawnResultsBuffer,
-            _resolvedSpawnParent,
-            _spawnAlgorithm,
-            preset.seed,
-            _cachedLifecycleOverride);
+        int spawnedCount = SpawnKit.SpawnNonAlloc(request, _spawnResultsBuffer);
 
         if (spawnedCount <= 0) return 0;
 
@@ -404,16 +399,28 @@ public abstract class SpawnZone : CoreEventBase
 
     private void EnsureRuntimePoolCapacity(int targetCount)
     {
+        if (preset == null || !preset.HasSpawnables)
+            return;
+
         int desiredPoolSize = ResolveDesiredPoolSize(targetCount);
         int prewarmCount = ResolveDesiredPrewarmCount(targetCount, desiredPoolSize);
         int growStep = ResolveDesiredGrowStep(desiredPoolSize);
 
-        SpawnKit.EnsurePoolCapacity(
-            preset.spawnable,
-            desiredPoolSize,
-            prewarmCount,
-            growStep,
-            allowGrow: true);
+        var spawnables = new List<SpawnableSO>(4);
+        preset.GetSpawnables(spawnables);
+
+        for (int i = 0; i < spawnables.Count; i++)
+        {
+            SpawnableSO spawnable = spawnables[i];
+            if (spawnable == null) continue;
+
+            SpawnKit.EnsurePoolCapacity(
+                spawnable,
+                desiredPoolSize,
+                prewarmCount,
+                growStep,
+                allowGrow: true);
+        }
     }
 
     private void StopSpawnLoops()
@@ -463,13 +470,6 @@ public abstract class SpawnZone : CoreEventBase
         if (spawnParent != null) return spawnParent;
         if (transform.parent != null) return transform.parent;
         return transform;
-    }
-
-    private SpawnLifecycle? ResolveLifecycleOverride()
-    {
-        return preset != null && preset.overrideLifecycle
-            ? preset.lifecycle
-            : (SpawnLifecycle?)null;
     }
 
     private void ResolvePointBaker()

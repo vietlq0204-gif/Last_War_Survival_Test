@@ -19,9 +19,8 @@ public sealed class ObstacleSpawner : MonoBehaviour
     private readonly List<Transform> _spawnSlotBuffer = new List<Transform>(64);
     private readonly List<Obstacle> _activeObstacles = new List<Obstacle>(64);
     private readonly List<GameObject> _spawnResults = new List<GameObject>(64);
-
-    private SpawnableSO _preparedPoolSpawnable;
-    private int _preparedPoolSize;
+    private readonly List<SpawnableSO> _spawnablesBuffer = new List<SpawnableSO>(8);
+    private readonly Dictionary<SpawnableSO, int> _preparedPoolSizes = new Dictionary<SpawnableSO, int>(8);
     private bool _suppressDespawnNotifications;
     private bool _hasWarnedMissingPointBaker;
     private bool _hasWarnedMissingPreset;
@@ -56,7 +55,7 @@ public sealed class ObstacleSpawner : MonoBehaviour
         if (!TryBuildSlotPoints())
             return false;
 
-        if (obstacleSpawnPreset == null || obstacleSpawnPreset.spawnable == null)
+        if (obstacleSpawnPreset == null || !obstacleSpawnPreset.HasSpawnables)
         {
             if (!_hasWarnedMissingPreset)
             {
@@ -90,19 +89,9 @@ public sealed class ObstacleSpawner : MonoBehaviour
         PreparePool(spawnCount);
 
         var algorithm = new PointSequenceSpawnAlgorithm(_slotPoints);
-        int[] variantPlan = obstacleSpawnPreset.spawnable.BuildVariantPlan(spawnCount);
-        SpawnLifecycle? lifecycle = obstacleSpawnPreset.overrideLifecycle
-            ? obstacleSpawnPreset.lifecycle
-            : (SpawnLifecycle?)null;
-
-        var request = new SpawnRequest(
-            obstacleSpawnPreset.spawnable,
-            spawnCount,
-            ResolveSpawnParent(),
-            algorithm,
-            obstacleSpawnPreset.seed,
-            lifecycle,
-            variantPlan);
+        var request = obstacleSpawnPreset.CreateRequest(spawnCount, algorithm, ResolveSpawnParent());
+        if (request.count <= 0)
+            return false;
 
         _spawnResults.Clear();
         int spawnedCount = FindSpawnManagerAndSpawn(request);
@@ -245,13 +234,13 @@ public sealed class ObstacleSpawner : MonoBehaviour
 
     private int ResolveTargetActiveCount()
     {
-        if (obstacleSpawnPreset == null || obstacleSpawnPreset.spawnable == null)
+        if (obstacleSpawnPreset == null || !obstacleSpawnPreset.HasSpawnables)
             return 0;
 
         if (keepRoadFilled)
             return _slotPoints.Count;
 
-        int maxByPreset = obstacleSpawnPreset.spawnable.ResolveSpawnCount(obstacleSpawnPreset.MaxCount);
+        int maxByPreset = obstacleSpawnPreset.ResolveSpawnCount();
         return Mathf.Min(_slotPoints.Count, maxByPreset);
     }
 
@@ -262,7 +251,7 @@ public sealed class ObstacleSpawner : MonoBehaviour
         if (!TryBuildSlotPoints())
             return false;
 
-        if (obstacleSpawnPreset == null || obstacleSpawnPreset.spawnable == null)
+        if (obstacleSpawnPreset == null || !obstacleSpawnPreset.HasSpawnables)
             return false;
 
         if (ResolveSpawnManager() == null)
@@ -289,19 +278,9 @@ public sealed class ObstacleSpawner : MonoBehaviour
         PreparePool(targetActiveCount);
 
         var algorithm = new PointSequenceSpawnAlgorithm(_spawnSlotBuffer);
-        int[] variantPlan = obstacleSpawnPreset.spawnable.BuildVariantPlan(_spawnSlotBuffer.Count);
-        SpawnLifecycle? lifecycle = obstacleSpawnPreset.overrideLifecycle
-            ? obstacleSpawnPreset.lifecycle
-            : (SpawnLifecycle?)null;
-
-        var request = new SpawnRequest(
-            obstacleSpawnPreset.spawnable,
-            _spawnSlotBuffer.Count,
-            ResolveSpawnParent(),
-            algorithm,
-            obstacleSpawnPreset.seed,
-            lifecycle,
-            variantPlan);
+        var request = obstacleSpawnPreset.CreateRequest(_spawnSlotBuffer.Count, algorithm, ResolveSpawnParent());
+        if (request.count <= 0)
+            return false;
 
         _spawnResults.Clear();
         int spawnedCount = FindSpawnManagerAndSpawn(request);
@@ -315,26 +294,32 @@ public sealed class ObstacleSpawner : MonoBehaviour
 
     private void PreparePool(int spawnCount)
     {
-        SpawnableSO spawnable = obstacleSpawnPreset != null ? obstacleSpawnPreset.spawnable : null;
-        if (spawnable == null)
+        if (obstacleSpawnPreset == null || !obstacleSpawnPreset.HasSpawnables)
             return;
 
-        if (_preparedPoolSpawnable != spawnable)
-        {
-            _preparedPoolSpawnable = spawnable;
-            _preparedPoolSize = 0;
-        }
+        obstacleSpawnPreset.GetSpawnables(_spawnablesBuffer);
+        if (_spawnablesBuffer.Count <= 0)
+            return;
 
         int desiredPoolSize = Mathf.Max(1, spawnCount + Mathf.Max(0, poolSizePadding));
-        if (desiredPoolSize <= _preparedPoolSize)
-            return;
-
         int prewarmCount = Mathf.Clamp(spawnCount, 0, desiredPoolSize);
         int growStep = Mathf.Max(1, spawnCount);
-        if (!SpawnKit.EnsurePoolCapacity(spawnable, desiredPoolSize, prewarmCount, growStep, allowGrow: true))
-            return;
 
-        _preparedPoolSize = desiredPoolSize;
+        for (int i = 0; i < _spawnablesBuffer.Count; i++)
+        {
+            SpawnableSO spawnable = _spawnablesBuffer[i];
+            if (spawnable == null)
+                continue;
+
+            _preparedPoolSizes.TryGetValue(spawnable, out int preparedPoolSize);
+            if (desiredPoolSize <= preparedPoolSize)
+                continue;
+
+            if (!SpawnKit.EnsurePoolCapacity(spawnable, desiredPoolSize, prewarmCount, growStep, allowGrow: true))
+                continue;
+
+            _preparedPoolSizes[spawnable] = desiredPoolSize;
+        }
     }
 
     private bool TryBuildSlotPoints()

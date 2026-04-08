@@ -11,12 +11,14 @@ namespace Vit.SpawnKit.Algorithms
 public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBatchReset, ISpawnResultCallback, IGridSlotReservationOwner
 {
     private const float ClosestPointToleranceSqr = 0.0001f;
+    private const int CenterCellCount = 5;
 
     private readonly Collider _collider;
     private readonly float _cellSize;
     private readonly float _edgePadding;
     private readonly float _verticalOffset;
     private readonly ColliderGridPlaneAnchor _anchor;
+    private readonly ColliderSurfaceGridCenterCell _preferredCenterCell;
     private readonly bool _includeCenterSlot;
     private readonly bool _useColliderAxes;
     private readonly bool _alignRotationToZone;
@@ -30,6 +32,12 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
     private readonly HashSet<long> _occupiedSlots = new HashSet<long>();
     private readonly HashSet<long> _blockedSlots = new HashSet<long>();
     private readonly List<long> _releasedKeysBuffer = new List<long>(16);
+    private readonly GridCell[] _centerCells = new GridCell[CenterCellCount];
+    private readonly bool[] _hasCenterCells = new bool[CenterCellCount];
+    private readonly float[] _centerCellDistances = new float[CenterCellCount];
+
+    private int _sortReferenceX;
+    private int _sortReferenceZ;
 
     public ColliderSurfaceGridAlgorithm(
         Collider collider,
@@ -37,6 +45,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         float edgePadding = 0f,
         float verticalOffset = 0f,
         ColliderGridPlaneAnchor anchor = ColliderGridPlaneAnchor.Bottom,
+        ColliderSurfaceGridCenterCell preferredCenterCell = ColliderSurfaceGridCenterCell.WholeGrid,
         bool includeCenterSlot = true,
         bool useColliderAxes = true,
         bool alignRotationToZone = true,
@@ -49,6 +58,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         _edgePadding = Mathf.Max(0f, edgePadding);
         _verticalOffset = verticalOffset;
         _anchor = anchor;
+        _preferredCenterCell = preferredCenterCell;
         _includeCenterSlot = includeCenterSlot;
         _useColliderAxes = useColliderAxes;
         _alignRotationToZone = alignRotationToZone;
@@ -83,6 +93,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         float edgePadding,
         float verticalOffset,
         ColliderGridPlaneAnchor anchor,
+        ColliderSurfaceGridCenterCell preferredCenterCell,
         bool includeCenterSlot,
         bool useColliderAxes,
         bool alignRotationToZone,
@@ -95,6 +106,7 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
                && Mathf.Approximately(_edgePadding, Mathf.Max(0f, edgePadding))
                && Mathf.Approximately(_verticalOffset, verticalOffset)
                && _anchor == anchor
+               && _preferredCenterCell == preferredCenterCell
                && _includeCenterSlot == includeCenterSlot
                && _useColliderAxes == useColliderAxes
                && _alignRotationToZone == alignRotationToZone
@@ -139,6 +151,28 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         }
     }
 
+    public void GetCenterCellPreviews(List<ColliderSurfaceGridCenterCellPreview> results)
+    {
+        if (results == null) return;
+
+        results.Clear();
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        for (int i = 0; i < CenterCellCount; i++)
+        {
+            if (!_hasCenterCells[i]) continue;
+
+            var centerCell = _centerCells[i];
+            results.Add(new ColliderSurfaceGridCenterCellPreview(
+                (ColliderSurfaceGridCenterCell)i,
+                centerCell.Key,
+                centerCell.Position,
+                centerCell.Rotation,
+                _preferredCenterCell == (ColliderSurfaceGridCenterCell)i));
+        }
+    }
+
     public bool TryReserveNextPlacement(out ColliderSurfaceGridPlacement placement)
     {
         placement = default;
@@ -163,6 +197,25 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
             return false;
 
         placement = CreatePlacement(_candidateCells[0]);
+        return true;
+    }
+
+    public bool TryGetCenterPlacement(
+        ColliderSurfaceGridCenterCell centerCell,
+        out ColliderSurfaceGridPlacement placement)
+    {
+        placement = default;
+        PruneReleasedReservations();
+        RefreshCandidateCells();
+
+        int centerCellIndex = (int)centerCell;
+        if (centerCellIndex < 0 || centerCellIndex >= CenterCellCount)
+            return false;
+
+        if (!_hasCenterCells[centerCellIndex])
+            return false;
+
+        placement = CreatePlacement(_centerCells[centerCellIndex]);
         return true;
     }
 
@@ -518,7 +571,8 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
             }
         }
 
-        _candidateCells.Sort(GridCellComparer.Instance);
+        RefreshCenterCells(frame);
+        _candidateCells.Sort(CompareGridCells);
     }
 
     private bool TryBuildFrame(out GridFrame frame)
@@ -586,10 +640,70 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
             x,
             z,
             position,
-            frame.Rotation,
-            x * x + z * z,
-            Mathf.Abs(x) + Mathf.Abs(z));
+            frame.Rotation);
         return true;
+    }
+
+    private void RefreshCenterCells(in GridFrame frame)
+    {
+        for (int i = 0; i < CenterCellCount; i++)
+        {
+            _hasCenterCells[i] = false;
+            _centerCellDistances[i] = float.PositiveInfinity;
+        }
+
+        for (int i = 0; i < _candidateCells.Count; i++)
+        {
+            GridCell candidate = _candidateCells[i];
+
+            for (int centerCellIndex = 0; centerCellIndex < CenterCellCount; centerCellIndex++)
+            {
+                Vector3 targetPosition = ResolveCenterCellTarget(frame, (ColliderSurfaceGridCenterCell)centerCellIndex);
+                float distanceSqr = (candidate.Position - targetPosition).sqrMagnitude;
+                if (_hasCenterCells[centerCellIndex] && distanceSqr >= _centerCellDistances[centerCellIndex])
+                    continue;
+
+                _centerCells[centerCellIndex] = candidate;
+                _centerCellDistances[centerCellIndex] = distanceSqr;
+                _hasCenterCells[centerCellIndex] = true;
+            }
+        }
+
+        int preferredCenterCellIndex = Mathf.Clamp((int)_preferredCenterCell, 0, CenterCellCount - 1);
+        if (_hasCenterCells[preferredCenterCellIndex])
+        {
+            _sortReferenceX = _centerCells[preferredCenterCellIndex].X;
+            _sortReferenceZ = _centerCells[preferredCenterCellIndex].Z;
+            return;
+        }
+
+        _sortReferenceX = 0;
+        _sortReferenceZ = 0;
+    }
+
+    private Vector3 ResolveCenterCellTarget(in GridFrame frame, ColliderSurfaceGridCenterCell centerCell)
+    {
+        float halfCenterOffsetX = frame.HalfRangeX * 0.5f;
+        float halfCenterOffsetZ = frame.HalfRangeZ * 0.5f;
+
+        switch (centerCell)
+        {
+            case ColliderSurfaceGridCenterCell.TopLeftQuadrant:
+                return frame.Center - frame.Right * halfCenterOffsetX + frame.Forward * halfCenterOffsetZ;
+
+            case ColliderSurfaceGridCenterCell.TopRightQuadrant:
+                return frame.Center + frame.Right * halfCenterOffsetX + frame.Forward * halfCenterOffsetZ;
+
+            case ColliderSurfaceGridCenterCell.BottomLeftQuadrant:
+                return frame.Center - frame.Right * halfCenterOffsetX - frame.Forward * halfCenterOffsetZ;
+
+            case ColliderSurfaceGridCenterCell.BottomRightQuadrant:
+                return frame.Center + frame.Right * halfCenterOffsetX - frame.Forward * halfCenterOffsetZ;
+
+            case ColliderSurfaceGridCenterCell.WholeGrid:
+            default:
+                return frame.Center;
+        }
     }
 
     private bool IsPointInsideCollider(Vector3 point)
@@ -717,6 +831,36 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         return x;
     }
 
+    private int CompareGridCells(GridCell a, GridCell b)
+    {
+        int ax = a.X - _sortReferenceX;
+        int az = a.Z - _sortReferenceZ;
+        int bx = b.X - _sortReferenceX;
+        int bz = b.Z - _sortReferenceZ;
+
+        int aRadiusSqr = ax * ax + az * az;
+        int bRadiusSqr = bx * bx + bz * bz;
+
+        int compare = aRadiusSqr.CompareTo(bRadiusSqr);
+        if (compare != 0) return compare;
+
+        int aManhattanDistance = Mathf.Abs(ax) + Mathf.Abs(az);
+        int bManhattanDistance = Mathf.Abs(bx) + Mathf.Abs(bz);
+        compare = aManhattanDistance.CompareTo(bManhattanDistance);
+        if (compare != 0) return compare;
+
+        compare = Mathf.Abs(az).CompareTo(Mathf.Abs(bz));
+        if (compare != 0) return compare;
+
+        compare = Mathf.Abs(ax).CompareTo(Mathf.Abs(bx));
+        if (compare != 0) return compare;
+
+        compare = az.CompareTo(bz);
+        if (compare != 0) return compare;
+
+        return ax.CompareTo(bx);
+    }
+
     private readonly struct GridFrame
     {
         public readonly Vector3 Center;
@@ -753,18 +897,14 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         public readonly int Z;
         public readonly Vector3 Position;
         public readonly Quaternion Rotation;
-        public readonly int RadiusSqr;
-        public readonly int ManhattanDistance;
 
-        public GridCell(long key, int x, int z, Vector3 position, Quaternion rotation, int radiusSqr, int manhattanDistance)
+        public GridCell(long key, int x, int z, Vector3 position, Quaternion rotation)
         {
             Key = key;
             X = x;
             Z = z;
             Position = position;
             Rotation = rotation;
-            RadiusSqr = radiusSqr;
-            ManhattanDistance = manhattanDistance;
         }
     }
 
@@ -782,30 +922,15 @@ public sealed class ColliderSurfaceGridAlgorithm : ITrySpawnAlgorithm, ISpawnBat
         }
     }
 
-    private sealed class GridCellComparer : IComparer<GridCell>
-    {
-        public static readonly GridCellComparer Instance = new GridCellComparer();
+}
 
-        public int Compare(GridCell a, GridCell b)
-        {
-            int compare = a.RadiusSqr.CompareTo(b.RadiusSqr);
-            if (compare != 0) return compare;
-
-            compare = a.ManhattanDistance.CompareTo(b.ManhattanDistance);
-            if (compare != 0) return compare;
-
-            compare = Mathf.Abs(a.Z).CompareTo(Mathf.Abs(b.Z));
-            if (compare != 0) return compare;
-
-            compare = Mathf.Abs(a.X).CompareTo(Mathf.Abs(b.X));
-            if (compare != 0) return compare;
-
-            compare = a.Z.CompareTo(b.Z);
-            if (compare != 0) return compare;
-
-            return a.X.CompareTo(b.X);
-        }
-    }
+public enum ColliderSurfaceGridCenterCell
+{
+    WholeGrid = 0,
+    TopLeftQuadrant = 1,
+    TopRightQuadrant = 2,
+    BottomLeftQuadrant = 3,
+    BottomRightQuadrant = 4,
 }
 
 public enum ColliderGridPlaneAnchor
@@ -838,6 +963,29 @@ public readonly struct ColliderSurfaceGridCellPreview
         Position = position;
         Rotation = rotation;
         IsOccupied = isOccupied;
+    }
+}
+
+public readonly struct ColliderSurfaceGridCenterCellPreview
+{
+    public readonly ColliderSurfaceGridCenterCell CenterCell;
+    public readonly long Key;
+    public readonly Vector3 Position;
+    public readonly Quaternion Rotation;
+    public readonly bool IsSelected;
+
+    public ColliderSurfaceGridCenterCellPreview(
+        ColliderSurfaceGridCenterCell centerCell,
+        long key,
+        Vector3 position,
+        Quaternion rotation,
+        bool isSelected)
+    {
+        CenterCell = centerCell;
+        Key = key;
+        Position = position;
+        Rotation = rotation;
+        IsSelected = isSelected;
     }
 }
 

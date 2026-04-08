@@ -218,37 +218,37 @@ namespace Vit.SpawnKit.Services
 
         public SpawnHandle Spawn(SpawnPresetSO preset, Collider volume, Transform parent = null)
         {
-            if (preset == null || preset.spawnable == null) return EmptyHandle();
+            if (preset == null || !preset.HasSpawnables) return EmptyHandle();
             return Spawn(preset.CreateRequest(volume, parent));
         }
 
         public Task<SpawnHandle> SpawnAsync(SpawnPresetSO preset, Collider volume, Transform parent = null, int maxPerFrame = 32, CancellationToken cancellationToken = default)
         {
-            if (preset == null || preset.spawnable == null) return Task.FromResult(EmptyHandle());
+            if (preset == null || !preset.HasSpawnables) return Task.FromResult(EmptyHandle());
             return SpawnAsync(preset.CreateRequest(volume, parent), maxPerFrame, cancellationToken);
         }
 
         public SpawnHandle Spawn(SpawnPresetSO preset, Collider[] volumes, Transform parent = null)
         {
-            if (preset == null || preset.spawnable == null) return EmptyHandle();
+            if (preset == null || !preset.HasSpawnables) return EmptyHandle();
             return Spawn(preset.CreateRequest(volumes, parent));
         }
 
         public Task<SpawnHandle> SpawnAsync(SpawnPresetSO preset, Collider[] volumes, Transform parent = null, int maxPerFrame = 32, CancellationToken cancellationToken = default)
         {
-            if (preset == null || preset.spawnable == null) return Task.FromResult(EmptyHandle());
+            if (preset == null || !preset.HasSpawnables) return Task.FromResult(EmptyHandle());
             return SpawnAsync(preset.CreateRequest(volumes, parent), maxPerFrame, cancellationToken);
         }
 
         public SpawnHandle Spawn(SpawnPresetSO preset, Transform parent = null)
         {
-            if (preset == null || preset.spawnable == null) return EmptyHandle();
+            if (preset == null || !preset.HasSpawnables) return EmptyHandle();
             return Spawn(preset.CreateRequest(parent));
         }
 
         public Task<SpawnHandle> SpawnAsync(SpawnPresetSO preset, Transform parent = null, int maxPerFrame = 32, CancellationToken cancellationToken = default)
         {
-            if (preset == null || preset.spawnable == null) return Task.FromResult(EmptyHandle());
+            if (preset == null || !preset.HasSpawnables) return Task.FromResult(EmptyHandle());
             return SpawnAsync(preset.CreateRequest(parent), maxPerFrame, cancellationToken);
         }
 
@@ -405,22 +405,16 @@ namespace Vit.SpawnKit.Services
         private readonly struct PreparedSpawn
         {
             public readonly SpawnRequest request;
-            public readonly SpawnRuntime runtime;
-            public readonly uint effectiveSeed;
-            public readonly SpawnLifecycle lifecycle;
+            public readonly SpawnableSO resolvedSpawnable;
             public readonly ISpawnAlgorithm algorithm;
 
             public PreparedSpawn(
                 in SpawnRequest request,
-                SpawnRuntime runtime,
-                uint effectiveSeed,
-                SpawnLifecycle lifecycle,
+                SpawnableSO resolvedSpawnable,
                 ISpawnAlgorithm algorithm)
             {
                 this.request = request;
-                this.runtime = runtime;
-                this.effectiveSeed = effectiveSeed;
-                this.lifecycle = lifecycle;
+                this.resolvedSpawnable = resolvedSpawnable;
                 this.algorithm = algorithm;
             }
         }
@@ -449,14 +443,29 @@ namespace Vit.SpawnKit.Services
             prepared = default;
             if (request.count <= 0) return false;
 
-            var spawnable = ResolveSpawnable(request);
-            if (spawnable == null) return false;
-            if (!Register(spawnable)) return false;
-            if (!_runtimes.TryGetValue(spawnable, out var runtime)) return false;
+            SpawnableSO resolvedSpawnable = null;
+            if (request.spawnables != null && request.spawnables.Length > 0)
+            {
+                bool hasRegisteredSpawnable = false;
+                for (int i = 0; i < request.spawnables.Length; i++)
+                {
+                    var candidate = request.spawnables[i];
+                    if (candidate == null) continue;
 
-            uint effectiveSeed = ResolveSeed(request.seed, spawnable, request.parent);
-            var lifecycle = request.overrideLifecycle ? request.lifecycle : spawnable.defaultLifecycle;
-            lifecycle.Sanitize();
+                    if (Register(candidate))
+                    {
+                        hasRegisteredSpawnable = true;
+                    }
+                }
+
+                if (!hasRegisteredSpawnable) return false;
+            }
+            else
+            {
+                resolvedSpawnable = ResolveSpawnable(request);
+                if (resolvedSpawnable == null) return false;
+                if (!Register(resolvedSpawnable)) return false;
+            }
 
             var algorithm = request.algorithm ?? new SimplePointAlgorithm(Vector3.zero, 0f);
             if (algorithm is ISpawnBatchReset resettable)
@@ -464,7 +473,7 @@ namespace Vit.SpawnKit.Services
                 resettable.ResetPlaced();
             }
 
-            prepared = new PreparedSpawn(request, runtime, effectiveSeed, lifecycle, algorithm);
+            prepared = new PreparedSpawn(request, resolvedSpawnable, algorithm);
             return true;
         }
 
@@ -474,14 +483,31 @@ namespace Vit.SpawnKit.Services
 
             for (int i = startIndex; i < endExclusive; i++)
             {
-                int variantIndex = ResolveVariantIndex(prepared.runtime, prepared.request.variantPlan, prepared.effectiveSeed, i);
-                if (variantIndex < 0 || variantIndex >= prepared.runtime.pools.Length)
+                var spawnable = ResolveSpawnable(prepared, i);
+                if (spawnable == null)
                 {
                     resultCallback?.OnSpawnFailed(i);
                     continue;
                 }
 
-                var pool = prepared.runtime.pools[variantIndex];
+                if (!_runtimes.TryGetValue(spawnable, out var runtime))
+                {
+                    resultCallback?.OnSpawnFailed(i);
+                    continue;
+                }
+
+                uint effectiveSeed = ResolveSeed(prepared.request.seed, spawnable, prepared.request.parent);
+                var lifecycle = prepared.request.overrideLifecycle ? prepared.request.lifecycle : spawnable.defaultLifecycle;
+                lifecycle.Sanitize();
+
+                int variantIndex = ResolveVariantIndex(runtime, prepared.request.variantPlan, effectiveSeed, i);
+                if (variantIndex < 0 || variantIndex >= runtime.pools.Length)
+                {
+                    resultCallback?.OnSpawnFailed(i);
+                    continue;
+                }
+
+                var pool = runtime.pools[variantIndex];
                 if (pool == null || !pool.IsReady)
                 {
                     resultCallback?.OnSpawnFailed(i);
@@ -492,7 +518,7 @@ namespace Vit.SpawnKit.Services
                 Quaternion rotation;
                 if (prepared.algorithm is ITrySpawnAlgorithm tryAlgorithm)
                 {
-                    if (!tryAlgorithm.TryGetPose(i, prepared.effectiveSeed, out position, out rotation))
+                    if (!tryAlgorithm.TryGetPose(i, effectiveSeed, out position, out rotation))
                     {
                         resultCallback?.OnSpawnFailed(i);
                         continue;
@@ -500,10 +526,10 @@ namespace Vit.SpawnKit.Services
                 }
                 else
                 {
-                    prepared.algorithm.GetPose(i, prepared.effectiveSeed, out position, out rotation);
+                    prepared.algorithm.GetPose(i, effectiveSeed, out position, out rotation);
                 }
 
-                var go = pool.Rent(prepared.request.parent, position, rotation, prepared.lifecycle);
+                var go = pool.Rent(prepared.request.parent, position, rotation, lifecycle);
                 if (go != null)
                 {
                     results.Add(go);
@@ -605,6 +631,12 @@ namespace Vit.SpawnKit.Services
             if (request.spawnable != null) return request.spawnable;
             if (request.key.Hash == 0) return null;
             return FindSpawnableInCatalog(request.key);
+        }
+
+        private SpawnableSO ResolveSpawnable(in PreparedSpawn prepared, int spawnIndex)
+        {
+            if (prepared.resolvedSpawnable != null) return prepared.resolvedSpawnable;
+            return prepared.request.ResolveSpawnableAt(spawnIndex);
         }
 
         private uint ResolveSeed(uint seed, SpawnableSO spawnable, Transform parent)

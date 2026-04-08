@@ -1,4 +1,5 @@
-﻿using System.Threading;
+using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 using Vit.SpawnKit.Algorithms;
@@ -23,7 +24,7 @@ namespace Vit.SpawnKit.Api
         }
 
         #region  Spawn
-        
+
         #region overload spawn one
         /// <summary>
         /// Spawns a single object at an exact position and rotation.
@@ -36,9 +37,9 @@ namespace Vit.SpawnKit.Api
                 : null;
         }
         #endregion
-        
+
         #region overload spawn batch
-        
+
         /// <summary>
         /// Spawn a batch from a <see cref="SpawnableSO"/>.
         /// </summary>
@@ -57,7 +58,7 @@ namespace Vit.SpawnKit.Api
                 : null;
         }
 
-        public static int SpawnNonAlloc(SpawnableSO spawnable, int count, System.Collections.Generic.List<GameObject> results, Transform parent = null, ISpawnAlgorithm algorithm = null, uint seed = 0, SpawnLifecycle? lifecycle = null)
+        public static int SpawnNonAlloc(SpawnableSO spawnable, int count, List<GameObject> results, Transform parent = null, ISpawnAlgorithm algorithm = null, uint seed = 0, SpawnLifecycle? lifecycle = null)
         {
             var service = Service;
             return service != null
@@ -65,17 +66,33 @@ namespace Vit.SpawnKit.Api
                 : 0;
         }
 
+        public static SpawnHandle Spawn(in SpawnRequest request)
+        {
+            var service = Service;
+            return service != null
+                ? service.Spawn(request)
+                : null;
+        }
+
+        public static int SpawnNonAlloc(in SpawnRequest request, List<GameObject> results)
+        {
+            var service = Service;
+            return service != null
+                ? service.SpawnNonAlloc(request, results)
+                : 0;
+        }
+
         /// <summary>
-                /// Spawns using a preset without collider input, typically at the parent transform or origin fallback.
-                /// </summary>
+        /// Spawns using a preset without collider input, typically at the parent transform or origin fallback.
+        /// </summary>
         public static SpawnHandle Spawn(SpawnPresetSO preset, Transform parent = null)
-                {
-                    var service = Service;
-                    return service != null
-                        ? service.Spawn(preset, parent)
-                        : null;
-                }
-        
+        {
+            var service = Service;
+            return service != null
+                ? service.Spawn(preset, parent)
+                : null;
+        }
+
         /// <summary>
         /// Spawns a batch from a <see cref="SpawnPresetSO"/>
         /// </summary>
@@ -91,12 +108,12 @@ namespace Vit.SpawnKit.Api
         /// Spawns using a preset across multiple collider volumes.
         /// </summary>
         public static SpawnHandle Spawn(SpawnPresetSO preset, Collider[] volumes, Transform parent = null)
-                {
-                    var service = Service;
-                    return service != null
-                        ? service.Spawn(preset, volumes, parent)
-                        : null;
-                }
+        {
+            var service = Service;
+            return service != null
+                ? service.Spawn(preset, volumes, parent)
+                : null;
+        }
 
         /// <summary>
         /// Spawns from any object that can build a <see cref="SpawnRequest"/>.
@@ -110,9 +127,9 @@ namespace Vit.SpawnKit.Api
                 ? service.Spawn(source)
                 : null;
         }
-        
+
         #endregion
-        
+
         #region overload spawn batch async
 
         /// <summary>
@@ -125,7 +142,7 @@ namespace Vit.SpawnKit.Api
                 ? service.SpawnAsync(preset, parent, maxPerFrame, cancellationToken)
                 : Task.FromResult<SpawnHandle>(null);
         }
-        
+
         /// <summary>
         /// Spawns a batch asynchronously across multiple frames from a <see cref="SpawnableSO"/>.
         /// </summary>
@@ -133,8 +150,7 @@ namespace Vit.SpawnKit.Api
         {
             var service = Service;
             return service != null
-                ? service.SpawnAsync(spawnable, count, parent, algorithm, seed, lifecycle, maxPerFrame,
-                    cancellationToken)
+                ? service.SpawnAsync(spawnable, count, parent, algorithm, seed, lifecycle, maxPerFrame, cancellationToken)
                 : Task.FromResult<SpawnHandle>(null);
         }
 
@@ -148,7 +164,7 @@ namespace Vit.SpawnKit.Api
                 ? service.SpawnAsync(preset, volume, parent, maxPerFrame, cancellationToken)
                 : Task.FromResult<SpawnHandle>(null);
         }
-        
+
         /// <summary>
         /// Spawns asynchronously using a preset across multiple collider volumes.
         /// </summary>
@@ -159,7 +175,7 @@ namespace Vit.SpawnKit.Api
                 ? service.SpawnAsync(preset, volumes, parent, maxPerFrame, cancellationToken)
                 : Task.FromResult<SpawnHandle>(null);
         }
-        
+
         /// <summary>
         /// Spawns asynchronously from any object that can build a <see cref="SpawnRequest"/>.
         /// </summary>
@@ -183,11 +199,11 @@ namespace Vit.SpawnKit.Api
                 ? service.SpawnAsync(request, maxPerFrame, cancellationToken)
                 : Task.FromResult<SpawnHandle>(null);
         }
-        
+
         #endregion
-        
+
         #endregion
-        
+
         /// <summary>
         /// Return a spawn instance to it pool
         /// </summary>
@@ -198,7 +214,7 @@ namespace Vit.SpawnKit.Api
             var service = Service;
             return service != null && service.Despawn(instance);
         }
-        
+
         /// <summary>
         /// Prepare pool (the inactive instances) of <see cref="SpawnableSO"/> specifically
         /// </summary>
@@ -223,15 +239,36 @@ namespace Vit.SpawnKit.Api
             var service = Service;
             service?.Prewarm(catalog);
         }
-        
+
         /// <summary>
-        /// Gets aggregated pool statistics for the spawnable referenced by a preset.
+        /// Gets aggregated pool statistics for the spawnables referenced by a preset.
         /// </summary>
         public static PoolStats GetPoolStats(SpawnPresetSO preset)
         {
-            return preset != null ? GetPoolStats(preset.spawnable) : default;
+            var service = Service;
+            if (service == null || preset == null || !preset.HasSpawnables)
+                return default;
+
+            var spawnables = new List<SpawnableSO>(4);
+            preset.GetSpawnables(spawnables);
+
+            int active = 0;
+            int inactive = 0;
+            int total = 0;
+            int max = 0;
+
+            for (int i = 0; i < spawnables.Count; i++)
+            {
+                PoolStats stats = service.GetPoolStats(spawnables[i]);
+                active += stats.active;
+                inactive += stats.inactive;
+                total += stats.total;
+                max += stats.max;
+            }
+
+            return new PoolStats(active, inactive, total, max);
         }
-        
+
         /// <summary>
         /// Attempts to get aggregated pool statistics for a spawnable.
         /// </summary>
@@ -245,7 +282,7 @@ namespace Vit.SpawnKit.Api
             }
 
             return service.TryGetPoolStats(spawnable, out stats);
-        }        
+        }
 
         /// <summary>
         /// Trims inactive instances in pool from <see cref="SpawnPresetSO"/> , only retains specific count
@@ -256,7 +293,20 @@ namespace Vit.SpawnKit.Api
         /// <returns></returns>
         public static int Trim(SpawnPresetSO preset, int keepInactive = 0)
         {
-            return preset != null ? Trim(preset.spawnable, keepInactive) : 0;
+            var service = Service;
+            if (service == null || preset == null || !preset.HasSpawnables)
+                return 0;
+
+            var spawnables = new List<SpawnableSO>(4);
+            preset.GetSpawnables(spawnables);
+
+            int removed = 0;
+            for (int i = 0; i < spawnables.Count; i++)
+            {
+                removed += service.Trim(spawnables[i], keepInactive);
+            }
+
+            return removed;
         }
 
         /// <summary>
@@ -266,7 +316,20 @@ namespace Vit.SpawnKit.Api
         /// <returns></returns>
         public static int Clear(SpawnPresetSO preset)
         {
-            return preset != null ? Clear(preset.spawnable) : 0;
+            var service = Service;
+            if (service == null || preset == null || !preset.HasSpawnables)
+                return 0;
+
+            var spawnables = new List<SpawnableSO>(4);
+            preset.GetSpawnables(spawnables);
+
+            int removed = 0;
+            for (int i = 0; i < spawnables.Count; i++)
+            {
+                removed += service.Clear(spawnables[i]);
+            }
+
+            return removed;
         }
 
         /// <summary>
@@ -276,33 +339,20 @@ namespace Vit.SpawnKit.Api
         /// <remarks>It only works when bool has more instances than count define by <see cref="SpawnPresetSO"/></remarks>
         public static int ReleaseUnused(SpawnPresetSO preset)
         {
-            return preset != null ? ReleaseUnused(preset.spawnable) : 0;
-        }
-        
-        
-        private static PoolStats GetPoolStats(SpawnableSO spawnable)
-        {
             var service = Service;
-            return service != null ? service.GetPoolStats(spawnable) : default;
+            if (service == null || preset == null || !preset.HasSpawnables)
+                return 0;
+
+            var spawnables = new List<SpawnableSO>(4);
+            preset.GetSpawnables(spawnables);
+
+            int removed = 0;
+            for (int i = 0; i < spawnables.Count; i++)
+            {
+                removed += service.ReleaseUnused(spawnables[i]);
+            }
+
+            return removed;
         }
-        
-        private static int Trim(SpawnableSO spawnable, int keepInactive = 0)
-        {
-            var service = Service;
-            return service != null ? service.Trim(spawnable, keepInactive) : 0;
-        }
-        
-        private static int Clear(SpawnableSO spawnable)
-        {
-            var service = Service;
-            return service != null ? service.Clear(spawnable) : 0;
-        }
-        
-        private static int ReleaseUnused(SpawnableSO spawnable)
-        {
-            var service = Service;
-            return service != null ? service.ReleaseUnused(spawnable) : 0;
-        }
-        
     }
 }

@@ -62,6 +62,10 @@ namespace Vit.SpawnKit.Components
         [SerializeField]
         private bool includeCenterSlot;
 
+        [Tooltip("Choose which of the five center cells acts as the logical grid center.")]
+        [SerializeField]
+        private ColliderSurfaceGridCenterCell preferredCenterCell = ColliderSurfaceGridCenterCell.WholeGrid;
+
         /// <summary>
         /// Xác định grid có xoay theo trục của collider hay dùng trục world.
         /// Với collider xoay nghiêng phức tạp, cách này vẫn dựa trên projection từ bounds nên chưa chính xác tuyệt đối.
@@ -168,6 +172,8 @@ namespace Vit.SpawnKit.Components
         /// </summary>
         private readonly List<ColliderSurfaceGridCellPreview> _previewCells =
             new List<ColliderSurfaceGridCellPreview>(256);
+        private readonly List<ColliderSurfaceGridCenterCellPreview> _centerPreviewCells =
+            new List<ColliderSurfaceGridCenterCellPreview>(5);
 
         /// <summary>
         /// Algorithm runtime được cache để giữ occupied slot giữa nhiều lần spawn.
@@ -220,6 +226,7 @@ namespace Vit.SpawnKit.Components
                     edgePadding,
                     verticalOffset,
                     anchor,
+                    preferredCenterCell,
                     includeCenterSlot,
                     useColliderAxes,
                     alignRotationToZone,
@@ -234,6 +241,7 @@ namespace Vit.SpawnKit.Components
                 edgePadding,
                 verticalOffset,
                 anchor,
+                preferredCenterCell,
                 includeCenterSlot,
                 useColliderAxes,
                 alignRotationToZone,
@@ -318,7 +326,9 @@ namespace Vit.SpawnKit.Components
             // Preview dùng cùng algorithm runtime nên Scene view phản ánh đúng slot đang bị chiếm.
             _previewCells.Clear();
             algorithm.GetPreviewCells(_previewCells);
-            if (_previewCells.Count == 0 && !drawColliderBounds) return;
+            _centerPreviewCells.Clear();
+            algorithm.GetCenterCellPreviews(_centerPreviewCells);
+            if (_previewCells.Count == 0 && _centerPreviewCells.Count == 0 && !drawColliderBounds) return;
 
             Matrix4x4 previousMatrix = Gizmos.matrix;
             Color previousColor = Gizmos.color;
@@ -334,6 +344,7 @@ namespace Vit.SpawnKit.Components
                 cellSize * previewCellFill,
                 Mathf.Max(previewThickness, cellSize * 0.02f),
                 cellSize * previewCellFill);
+            float centerMarkerRadius = Mathf.Max(previewThickness * 0.75f, cellSize * 0.12f);
 
             for (int i = 0; i < _previewCells.Count; i++)
             {
@@ -349,6 +360,27 @@ namespace Vit.SpawnKit.Components
 
                 Gizmos.color = gridOutlineColor;
                 Gizmos.DrawWireCube(Vector3.zero, previewSize);
+            }
+
+            Gizmos.matrix = Matrix4x4.identity;
+
+            for (int i = 0; i < _centerPreviewCells.Count; i++)
+            {
+                var centerCell = _centerPreviewCells[i];
+                float markerRadius = centerCell.IsSelected
+                    ? centerMarkerRadius * 1.35f
+                    : centerMarkerRadius;
+
+                Gizmos.color = centerCell.IsSelected
+                    ? new Color(1f, 0.2f, 0.2f, 1f)
+                    : new Color(1f, 0f, 0f, 0.85f);
+                Gizmos.DrawSphere(centerCell.Position, markerRadius);
+
+                if (!centerCell.IsSelected)
+                    continue;
+
+                Gizmos.color = Color.white;
+                Gizmos.DrawWireSphere(centerCell.Position, markerRadius * 1.15f);
             }
 
             Gizmos.matrix = previousMatrix;

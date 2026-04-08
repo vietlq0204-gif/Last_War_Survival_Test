@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -39,8 +40,8 @@ public class SpawnGridQueue : CoreEventBase
 
     private Coroutine _spawnRoutine;
     private int _pendingSpawnCount;
-    private int _preparedPoolSize;
-    private SpawnableSO _preparedPoolSpawnable;
+    private readonly List<SpawnableSO> _spawnablesBuffer = new List<SpawnableSO>(8);
+    private readonly Dictionary<SpawnableSO, int> _preparedPoolSizes = new Dictionary<SpawnableSO, int>(8);
     private bool _hasWarnedMissingSpawnPreset;
     private bool _hasWarnedMissingSpawnZone;
     private bool _hasWarnedMissingSpawnManager;
@@ -193,36 +194,39 @@ public class SpawnGridQueue : CoreEventBase
 
     private void PreparePool(int targetTotalCount)
     {
-        var spawnable = ResolveSpawnable();
-        if (spawnable == null) return;
+        if (spawnPreset == null || !spawnPreset.HasSpawnables) return;
 
-        if (_preparedPoolSpawnable != spawnable)
-        {
-            _preparedPoolSpawnable = spawnable;
-            _preparedPoolSize = 0;
-        }
+        spawnPreset.GetSpawnables(_spawnablesBuffer);
+        if (_spawnablesBuffer.Count <= 0) return;
 
         int safeMaxSpawnPerFrame = ResolveSafeMaxSpawnPerFrame();
         int desiredPoolSize = Mathf.Max(1, targetTotalCount + poolSizePadding);
-        if (desiredPoolSize <= _preparedPoolSize) return;
-
         int prewarmCount = Mathf.Clamp(Mathf.Max(safeMaxSpawnPerFrame, targetTotalCount), 0, desiredPoolSize);
         int growStep = safeMaxSpawnPerFrame;
 
-        if (!SpawnKit.EnsurePoolCapacity(
-                spawnable,
-                desiredPoolSize,
-                prewarmCount,
-                growStep,
-                allowGrow: true))
-            return;
+        for (int i = 0; i < _spawnablesBuffer.Count; i++)
+        {
+            SpawnableSO spawnable = _spawnablesBuffer[i];
+            if (spawnable == null) continue;
 
-        _preparedPoolSize = desiredPoolSize;
+            _preparedPoolSizes.TryGetValue(spawnable, out int preparedPoolSize);
+            if (desiredPoolSize <= preparedPoolSize) continue;
+
+            if (!SpawnKit.EnsurePoolCapacity(
+                    spawnable,
+                    desiredPoolSize,
+                    prewarmCount,
+                    growStep,
+                    allowGrow: true))
+                continue;
+
+            _preparedPoolSizes[spawnable] = desiredPoolSize;
+        }
     }
 
     private bool CanSpawn()
     {
-        if (spawnPreset == null || spawnPreset.spawnable == null)
+        if (spawnPreset == null || !spawnPreset.HasSpawnables)
         {
             if (!_hasWarnedMissingSpawnPreset)
             {
@@ -324,23 +328,13 @@ public class SpawnGridQueue : CoreEventBase
         ColliderSurfaceGridZone gridZone,
         ColliderSurfaceGridAlgorithm gridAlgorithm)
     {
-        SpawnLifecycle? lifecycle = spawnPreset != null && spawnPreset.overrideLifecycle
-            ? spawnPreset.lifecycle
-            : (SpawnLifecycle?)null;
+        if (spawnPreset == null)
+            return default;
 
-        var spawnable = ResolveSpawnable();
-        int[] variantPlan = spawnable != null
-            ? spawnable.BuildVariantPlan(spawnCount)
-            : null;
-
-        return new SpawnRequest(
-            spawnable,
+        return spawnPreset.CreateRequest(
             spawnCount,
-            ResolveSpawnParent(),
             CreateSpawnAlgorithm(spawnCount, gridZone, gridAlgorithm),
-            spawnPreset != null ? spawnPreset.seed : 0,
-            lifecycle,
-            variantPlan);
+            ResolveSpawnParent());
     }
 
     private ISpawnAlgorithm CreateSpawnAlgorithm(
@@ -437,11 +431,6 @@ public class SpawnGridQueue : CoreEventBase
     {
         if (SpawnManager.Instance != null) return SpawnManager.Instance;
         return FindAnyObjectByType<SpawnManager>();
-    }
-
-    private SpawnableSO ResolveSpawnable()
-    {
-        return spawnPreset != null ? spawnPreset.spawnable : null;
     }
 
     private int ResolveSafeMaxSpawnPerFrame()
