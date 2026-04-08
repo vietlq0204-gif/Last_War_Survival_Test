@@ -60,7 +60,7 @@ public class Enemy : ObjectSpawned
         obstacleRepositionSpeed = Mathf.Max(0.05f, obstacleRepositionSpeed);
         obstacleSlotDistance = Mathf.Max(0.05f, obstacleSlotDistance);
         obstacleArrivalDistance = Mathf.Max(0.05f, obstacleArrivalDistance);
-        EnsureObstacleAvoidanceLayer();
+        // EnsureObstacleAvoidanceLayer();
     }
 
     private void Update()
