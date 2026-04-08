@@ -40,7 +40,7 @@ namespace Vit.SpawnKit.Components
         private float edgePadding = 0.05f;
 
         /// <summary>
-        /// Mặt phẳng tham chiếu để đặt grid trên collider.
+        /// Mặt phẳng tham chiếu để đặt grid trên collider. 
         /// Lựa chọn này phù hợp cho collider đơn giản; với hình dạng phức tạp, anchor vẫn dựa trên bounds hoặc closest point.
         /// </summary>
         [Tooltip("Mặt phẳng tham chiếu để đặt grid: Top, Bottom hoặc Center của collider zone.")] [SerializeField]

@@ -1,3 +1,4 @@
+using System.Collections.Generic;
 using UnityEngine;
 using Vit.SpawnKit.Algorithms;
 
@@ -6,6 +7,8 @@ using Vit.SpawnKit.Algorithms;
 /// </summary>
 public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
 {
+    private static readonly HashSet<Teammate> ActivePickupCollectors = new HashSet<Teammate>();
+
     [SerializeField, Min(0f)] private float defaultMoveToSlotDuration = 0.25f;
     [SerializeField, Min(0f)] private float slotPositionTolerance = 0.01f;
     [SerializeField, Min(0f)] private float slotRotationTolerance = 0.5f;
@@ -23,6 +26,7 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
     public bool HasAssignedFormationSlot => _assignedSlotAlgorithm != null;
     public Vector3 AssignedFormationSlotPosition => _lastResolvedSlotPosition;
     public Quaternion AssignedFormationSlotRotation => _lastResolvedSlotRotation;
+    public bool CanCollectPickups => !_isQueuedForDamageDespawn && gameObject.activeInHierarchy;
 
     protected override void Awake()
     {
@@ -73,6 +77,7 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
         ResetAssignedFormationSlot();
         _isQueuedForDamageDespawn = false;
         RestoreDefaultRendererStates();
+        ActivePickupCollectors.Add(this);
         base.OnSpawnedFromPool();
 
         _owningSpawner = ResolveOwningSpawner();
@@ -81,12 +86,18 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
 
     public override void OnDespawnedToPool()
     {
+        ActivePickupCollectors.Remove(this);
         _owningSpawner?.NotifyTeammateDespawned(this);
         _owningSpawner = null;
         _isQueuedForDamageDespawn = false;
         ResetAssignedFormationSlot();
         RestoreDefaultRendererStates();
         base.OnDespawnedToPool();
+    }
+
+    protected virtual void OnDisable()
+    {
+        ActivePickupCollectors.Remove(this);
     }
 
     public void AssignFormationSlot(ColliderSurfaceGridAlgorithm slotAlgorithm, long slotKey)
@@ -113,10 +124,39 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
             return false;
 
         _isQueuedForDamageDespawn = true;
+        ActivePickupCollectors.Remove(this);
         ReleaseGridReservation();
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
         return true;
+    }
+
+    public static bool TryGetClosestPickupCollector(Vector3 referencePosition, float maxDistance, out Teammate collector)
+    {
+        collector = null;
+        float maxDistanceSqr = Mathf.Max(0.01f, maxDistance) * Mathf.Max(0.01f, maxDistance);
+        float bestDistanceSqr = maxDistanceSqr;
+        bool found = false;
+
+        foreach (Teammate teammate in ActivePickupCollectors)
+        {
+            if (teammate == null || !teammate.CanCollectPickups)
+                continue;
+
+            Transform teammateTransform = teammate.CachedTransform != null ? teammate.CachedTransform : teammate.transform;
+            float distanceSqr = (teammateTransform.position - referencePosition).sqrMagnitude;
+            if (found && distanceSqr >= bestDistanceSqr)
+                continue;
+
+            if (!found && distanceSqr > maxDistanceSqr)
+                continue;
+
+            bestDistanceSqr = distanceSqr;
+            collector = teammate;
+            found = true;
+        }
+
+        return found;
     }
 
     private void ResetAssignedFormationSlot()

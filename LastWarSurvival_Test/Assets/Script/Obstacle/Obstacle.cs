@@ -186,12 +186,34 @@ public sealed class Obstacle : ObjectSpawned
 
     private void SpawnRewardIfNeeded()
     {
-        GameObject rewardPrefab = obstacleData != null ? obstacleData.ItemReward : null;
-        if (rewardPrefab == null)
+        RewardSO reward = obstacleData != null ? obstacleData.Reward : null;
+        if (reward == null || !reward.HasValidItem)
             return;
 
         Transform targetTransform = CachedTransform != null ? CachedTransform : transform;
-        Instantiate(rewardPrefab, targetTransform.position, targetTransform.rotation);
+        GameObject rewardPrefab = reward.Item != null ? reward.Item.PrefabItem : null;
+        int rewardCount = reward.ResolveTotalItemCount();
+        if (rewardPrefab == null || rewardCount <= 0)
+            return;
+
+        for (int i = 0; i < rewardCount; i++)
+        {
+            Vector3 spawnOffset = ResolveRewardSpawnOffset(i, rewardCount);
+            Instantiate(
+                rewardPrefab,
+                targetTransform.position + spawnOffset,
+                targetTransform.rotation);
+        }
+    }
+
+    private static Vector3 ResolveRewardSpawnOffset(int index, int totalCount)
+    {
+        if (totalCount <= 1)
+            return Vector3.zero;
+
+        float angle = index * Mathf.PI * 2f / totalCount;
+        float radius = Mathf.Min(0.35f, 0.08f * Mathf.Max(1, totalCount - 1));
+        return new Vector3(Mathf.Cos(angle) * radius, 0f, Mathf.Sin(angle) * radius);
     }
 
     private void CacheRenderers()

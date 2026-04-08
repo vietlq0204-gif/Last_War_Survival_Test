@@ -1,7 +1,9 @@
 using System.Collections.Generic;
 using UnityEngine;
+using UnityEngine.Serialization;
 using Vit.SpawnKit.Algorithms;
 using Vit.SpawnKit.Api;
+using Vit.SpawnKit.Data;
 using Vit.SpawnKit.ScriptableObjects;
 using Vit.SpawnKit.Services;
 
@@ -12,21 +14,21 @@ public sealed class BulletSpawner : MonoBehaviour
     private const string HomeTag = "Home";
     private const string EnemyTag = "Enemy";
     private static readonly Vector3 BulletDirection = Vector3.forward;
+    private const float DefaultFireInterval = 0.1f;
+    private const int DefaultBulletsPerTeammate = 1;
+    private const int DefaultMaxBulletsPerVolley = 32;
+    private const int DefaultMaxActiveBullets = 256;
 
     [Header("References")]
-    [SerializeField] private SpawnableSO bulletSpawnable;
+    [FormerlySerializedAs("bulletSpawnable")]
+    [SerializeField] private SpawnPresetSO bulletSpawnPresetDefault;
     [SerializeField] private SpawnGridQueue teammateGridSource;
     [SerializeField] private Transform bulletParent;
-    [SerializeField] private Collider homeCollider;
+    [SerializeField] private HomeController homeController;
     [SerializeField] private Collider bulletSpawnAreaCollider;
     [SerializeField] private Transform[] muzzles;
 
-    [Header("Fire")]
-    [SerializeField, Min(0.01f)] private float fireInterval = 0.15f;
-    [SerializeField, Min(1)] private int bulletsPerTeammate = 1;
-    [SerializeField, Min(0)] private int maxBulletsPerVolley;
-    [SerializeField, Min(1)] private int maxActiveBullets = 128;
-    [SerializeField, Min(0.01f)] private float bulletLifetime = 2f;
+    [Header("Runtime")]
     [SerializeField] private bool prewarmPoolOnStart = true;
     [SerializeField] private bool clampVolleyToSustainableCadence = true;
 
@@ -38,7 +40,7 @@ public sealed class BulletSpawner : MonoBehaviour
     [SerializeField, Min(0f)] private float maxSpawnAreaHeight = 1.5f;
 
     [Header("Hit Detection")]
-    [SerializeField] private LayerMask targetLayers = 1 << 6;
+    [SerializeField] private LayerMask targetLayers = (1 << 6) | (1 << 7);
     [SerializeField, Min(1)] private int hitBufferSize = 8;
 
     private readonly List<GameObject> _spawnBuffer = new List<GameObject>(64);
@@ -56,12 +58,12 @@ public sealed class BulletSpawner : MonoBehaviour
     private int _preparedPoolSize;
     private SpawnableSO _preparedPoolSpawnable;
     private SpawnManager _cachedSpawnManager;
+    private WeaponSO _equippedWeapon;
+    private HomeController _subscribedHomeController;
 
     private bool _hasWarnedMissingSpawnable;
     private bool _hasWarnedMissingTeammateGrid;
-    private bool _hasWarnedMissingHomeCollider;
-    private bool _hasWarnedMissingHomeTag;
-    private bool _hasWarnedHomeNotTrigger;
+    private bool _hasWarnedMissingHomeController;
     private bool _hasWarnedMissingSpawnManager;
     private bool _hasWarnedMissingMuzzles;
     private bool _hasWarnedMissingBulletComponent;
@@ -71,51 +73,47 @@ public sealed class BulletSpawner : MonoBehaviour
     private Vector3 _spawnAreaBaseCenter;
     private int _lastSpawnAreaTeammateCount = -1;
 
+    public WeaponSO EquippedWeapon => _equippedWeapon;
+
     private struct ActiveBulletRuntime
     {
         public Bullet bullet;
         public Transform cachedTransform;
         public Vector3 position;
         public float speed;
-        public float remainingLifetime;
         public float hitRadius;
     }
 
     private void Reset()
     {
-        AutoAssignHomeCollider();
+        AutoAssignHomeController();
         AutoAssignBulletSpawnAreaCollider();
     }
 
     private void Awake()
     {
-        AutoAssignHomeCollider();
+        AutoAssignHomeController();
         EnsureRuntimeCaches();
-        EnsureHomeTriggerRelays();
+        SubscribeToHomeController();
         RefreshHomeOccupants();
     }
 
     private void OnEnable()
     {
-        EnsureHomeTriggerRelays();
+        SubscribeToHomeController();
         RefreshHomeOccupants();
         _nextFireTime = Time.time;
     }
 
     private void OnValidate()
     {
-        fireInterval = Mathf.Max(0.01f, fireInterval);
-        bulletsPerTeammate = Mathf.Max(1, bulletsPerTeammate);
-        maxBulletsPerVolley = Mathf.Max(0, maxBulletsPerVolley);
-        maxActiveBullets = Mathf.Max(1, maxActiveBullets);
-        bulletLifetime = Mathf.Max(0.01f, bulletLifetime);
         spawnAreaWidthPerTeammate = Mathf.Max(0f, spawnAreaWidthPerTeammate);
         spawnAreaHeightPerTeammate = Mathf.Max(0f, spawnAreaHeightPerTeammate);
         maxSpawnAreaWidth = Mathf.Max(0f, maxSpawnAreaWidth);
         maxSpawnAreaHeight = Mathf.Max(0f, maxSpawnAreaHeight);
         hitBufferSize = Mathf.Max(1, hitBufferSize);
 
-        AutoAssignHomeCollider();
+        AutoAssignHomeController();
         AutoAssignBulletSpawnAreaCollider();
         EnsureRuntimeCaches();
     }
@@ -123,7 +121,7 @@ public sealed class BulletSpawner : MonoBehaviour
     private void Start()
     {
         EnsureRuntimeCaches();
-        EnsureHomeTriggerRelays();
+        SubscribeToHomeController();
         RefreshHomeOccupants();
 
         if (prewarmPoolOnStart)
@@ -160,7 +158,7 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private void OnDisable()
     {
-        ReleaseHomeTriggerRelays();
+        UnsubscribeFromHomeController();
         DespawnAllActiveBullets();
         _playersInsideHome.Clear();
         _nextFireTime = 0f;
@@ -168,39 +166,61 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private void OnDestroy()
     {
-        ReleaseHomeTriggerRelays();
+        UnsubscribeFromHomeController();
     }
 
-    private void OnTriggerEnter(Collider other)
+    public void ApplyWeapon(WeaponSO weapon)
     {
-        if (homeCollider == null || homeCollider.gameObject != gameObject)
+        if (weapon != null && !weapon.IsValid)
             return;
 
-        HandleHomeTriggerEnter(other);
+        _equippedWeapon = weapon;
+
+        SpawnableSO activeSpawnable = ResolveActiveBulletSpawnable();
+        if (_preparedPoolSpawnable != activeSpawnable)
+        {
+            _preparedPoolSpawnable = activeSpawnable;
+            _preparedPoolSize = 0;
+        }
     }
 
-    private void OnTriggerExit(Collider other)
+    private void HandleHomeInteraction(HomeInteractionEvent interactionEvent)
     {
-        if (homeCollider == null || homeCollider.gameObject != gameObject)
+        if (interactionEvent == null || interactionEvent.controller != ResolveHomeController())
             return;
 
-        HandleHomeTriggerExit(other);
+        if (interactionEvent.isEnter)
+            HandleHomeTriggerEnter(interactionEvent.otherCollider);
+        else
+            HandleHomeTriggerExit(interactionEvent.otherCollider);
     }
 
     public void HandleHomeTriggerEnterFromRelay(Collider sourceCollider, Collider other)
     {
-        if (!IsManagedHomeCollider(sourceCollider))
+        HomeController resolvedHomeController = ResolveHomeController();
+        if (resolvedHomeController == null || sourceCollider == null || other == null)
             return;
 
-        HandleHomeTriggerEnter(other);
+        HandleHomeInteraction(new HomeInteractionEvent(
+            resolvedHomeController,
+            resolvedHomeController.HomeCollider,
+            sourceCollider,
+            other,
+            HomeInteractionType.Enter));
     }
 
     public void HandleHomeTriggerExitFromRelay(Collider sourceCollider, Collider other)
     {
-        if (!IsManagedHomeCollider(sourceCollider))
+        HomeController resolvedHomeController = ResolveHomeController();
+        if (resolvedHomeController == null || sourceCollider == null || other == null)
             return;
 
-        HandleHomeTriggerExit(other);
+        HandleHomeInteraction(new HomeInteractionEvent(
+            resolvedHomeController,
+            resolvedHomeController.HomeCollider,
+            sourceCollider,
+            other,
+            HomeInteractionType.Exit));
     }
 
     private void HandleHomeTriggerEnter(Collider other)
@@ -223,9 +243,9 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private bool CanFire()
     {
-        if (bulletSpawnable == null)
+        if (ResolveActiveBulletSpawnable() == null)
         {
-            WarnOnce(ref _hasWarnedMissingSpawnable, "BulletSpawner needs a bulletSpawnable.");
+            WarnOnce(ref _hasWarnedMissingSpawnable, "BulletSpawner needs a valid bulletSpawnPresetDefault or WeaponSO.");
             return false;
         }
 
@@ -247,30 +267,15 @@ public sealed class BulletSpawner : MonoBehaviour
 
         _hasWarnedMissingSpawnManager = false;
 
-        Collider resolvedHomeCollider = ResolveHomeCollider();
-        if (resolvedHomeCollider == null)
+        HomeController resolvedHomeController = ResolveHomeController();
+        Collider resolvedHomeCollider = resolvedHomeController != null ? resolvedHomeController.HomeCollider : null;
+        if (resolvedHomeController == null || resolvedHomeCollider == null)
         {
-            WarnOnce(ref _hasWarnedMissingHomeCollider, "BulletSpawner needs a Home collider.");
+            WarnOnce(ref _hasWarnedMissingHomeController, "BulletSpawner needs a HomeController with a valid Home collider.");
             return false;
         }
 
-        _hasWarnedMissingHomeCollider = false;
-
-        if (!resolvedHomeCollider.CompareTag(HomeTag))
-        {
-            WarnOnce(ref _hasWarnedMissingHomeTag, "BulletSpawner homeCollider must use tag 'Home'.");
-            return false;
-        }
-
-        _hasWarnedMissingHomeTag = false;
-
-        if (!resolvedHomeCollider.isTrigger)
-        {
-            WarnOnce(ref _hasWarnedHomeNotTrigger, "BulletSpawner homeCollider must be a trigger collider.");
-            return false;
-        }
-
-        _hasWarnedHomeNotTrigger = false;
+        _hasWarnedMissingHomeController = false;
 
         if (ResolveBulletSpawnAreaCollider() == null && BuildMuzzleSet() <= 0)
         {
@@ -284,6 +289,10 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private bool FireVolley(int bulletCount)
     {
+        SpawnableSO activeSpawnable = ResolveActiveBulletSpawnable();
+        if (activeSpawnable == null)
+            return false;
+
         int muzzleCount = BuildMuzzleSet();
         Collider spawnAreaCollider = ResolveBulletSpawnAreaCollider();
         if (spawnAreaCollider == null && muzzleCount <= 0)
@@ -295,12 +304,14 @@ public sealed class BulletSpawner : MonoBehaviour
         Vector3 fallbackPosition = spawnParent != null ? spawnParent.position : transform.position;
         _spawnAlgorithm.Configure(spawnAreaCollider, bulletCount, _resolvedMuzzles, muzzleCount, fallbackPosition);
 
+        SpawnLifecycle? lifecycleOverride = ResolveActiveBulletLifecycleOverride();
         int spawnedCount = SpawnKit.SpawnNonAlloc(
-            bulletSpawnable,
+            activeSpawnable,
             bulletCount,
             _spawnBuffer,
             spawnParent,
-            _spawnAlgorithm);
+            _spawnAlgorithm,
+            lifecycle: lifecycleOverride);
 
         if (spawnedCount <= 0)
             return false;
@@ -343,7 +354,6 @@ public sealed class BulletSpawner : MonoBehaviour
             cachedTransform = bulletTransform,
             position = startPosition,
             speed = Mathf.Max(0f, bullet.MoveSpeed),
-            remainingLifetime = bulletLifetime,
             hitRadius = Mathf.Max(0f, bullet.HitRadius),
         });
     }
@@ -354,21 +364,13 @@ public sealed class BulletSpawner : MonoBehaviour
             return;
 
         float targetDistanceScale = deltaTime;
-        int layerMask = Physics.AllLayers;
+        int layerMask = ResolveHitLayerMask();
 
         for (int i = _activeBullets.Count - 1; i >= 0; i--)
         {
             var runtime = _activeBullets[i];
             if (!IsRuntimeValid(runtime))
             {
-                RemoveActiveBulletAt(i);
-                continue;
-            }
-
-            runtime.remainingLifetime -= deltaTime;
-            if (runtime.remainingLifetime <= 0f)
-            {
-                QueueRuntimeBulletDespawn(runtime);
                 RemoveActiveBulletAt(i);
                 continue;
             }
@@ -522,14 +524,15 @@ public sealed class BulletSpawner : MonoBehaviour
         if (teammateCount <= 0)
             return 0;
 
-        int bulletCount = MultiplyClamped(teammateCount, bulletsPerTeammate);
-        if (maxBulletsPerVolley > 0)
-            bulletCount = Mathf.Min(bulletCount, maxBulletsPerVolley);
+        int bulletCount = MultiplyClamped(teammateCount, ResolveActiveBulletsPerTeammate());
+        int maxBulletsPerVolleyOverride = ResolveActiveMaxBulletsPerVolley();
+        if (maxBulletsPerVolleyOverride > 0)
+            bulletCount = Mathf.Min(bulletCount, maxBulletsPerVolleyOverride);
 
         if (clampVolleyToSustainableCadence)
             bulletCount = Mathf.Min(bulletCount, ResolveSustainableVolleyCount());
 
-        int availableSlots = Mathf.Max(0, maxActiveBullets - _activeBullets.Count);
+        int availableSlots = Mathf.Max(0, ResolveActiveMaxActiveBullets() - _activeBullets.Count);
         if (availableSlots <= 0)
             return 0;
 
@@ -546,18 +549,90 @@ public sealed class BulletSpawner : MonoBehaviour
         return teammateGridSource != null ? Mathf.Max(0, teammateGridSource.GetOccupiedSlotCount()) : 0;
     }
 
+    private SpawnPresetSO ResolveActiveBulletSpawnPreset()
+    {
+        if (_equippedWeapon != null
+            && _equippedWeapon.IsValid
+            && _equippedWeapon.BulletSpawnPreset != null
+            && _equippedWeapon.BulletSpawnPreset.HasSpawnables)
+            return _equippedWeapon.BulletSpawnPreset;
+
+        return bulletSpawnPresetDefault != null && bulletSpawnPresetDefault.HasSpawnables
+            ? bulletSpawnPresetDefault
+            : null;
+    }
+
+    private SpawnableSO ResolveActiveBulletSpawnable()
+    {
+        SpawnPresetSO activePreset = ResolveActiveBulletSpawnPreset();
+        return activePreset != null ? activePreset.GetPrimarySpawnable() : null;
+    }
+
+    private SpawnLifecycle? ResolveActiveBulletLifecycleOverride()
+    {
+        SpawnPresetSO activePreset = ResolveActiveBulletSpawnPreset();
+        if (activePreset == null || !activePreset.overrideLifecycle)
+            return null;
+
+        return activePreset.lifecycle;
+    }
+
+    private float ResolveActiveFireInterval()
+    {
+        return _equippedWeapon != null && _equippedWeapon.IsValid
+            ? _equippedWeapon.FireInterval
+            : DefaultFireInterval;
+    }
+
+    private int ResolveActiveBulletsPerTeammate()
+    {
+        return _equippedWeapon != null && _equippedWeapon.IsValid
+            ? _equippedWeapon.BulletsPerTeammate
+            : DefaultBulletsPerTeammate;
+    }
+
+    private int ResolveActiveMaxBulletsPerVolley()
+    {
+        return _equippedWeapon != null && _equippedWeapon.IsValid
+            ? _equippedWeapon.MaxBulletsPerVolley
+            : DefaultMaxBulletsPerVolley;
+    }
+
+    private int ResolveActiveMaxActiveBullets()
+    {
+        return _equippedWeapon != null && _equippedWeapon.IsValid
+            ? _equippedWeapon.MaxActiveBullets
+            : DefaultMaxActiveBullets;
+    }
+
+    private float ResolveActiveBulletTimedLifetime()
+    {
+        SpawnPresetSO activePreset = ResolveActiveBulletSpawnPreset();
+        if (activePreset == null)
+            return 0f;
+
+        if (activePreset.overrideLifecycle)
+            return activePreset.lifecycle.IsTimed ? activePreset.lifecycle.delaySeconds : 0f;
+
+        SpawnableSO activeSpawnable = activePreset.GetPrimarySpawnable();
+        return activeSpawnable != null && activeSpawnable.defaultLifecycle.IsTimed
+            ? activeSpawnable.defaultLifecycle.delaySeconds
+            : 0f;
+    }
+
     private void PreparePool()
     {
-        if (bulletSpawnable == null)
+        SpawnableSO activeSpawnable = ResolveActiveBulletSpawnable();
+        if (activeSpawnable == null)
             return;
 
-        if (_preparedPoolSpawnable != bulletSpawnable)
+        if (_preparedPoolSpawnable != activeSpawnable)
         {
-            _preparedPoolSpawnable = bulletSpawnable;
+            _preparedPoolSpawnable = activeSpawnable;
             _preparedPoolSize = 0;
         }
 
-        int desiredPoolSize = Mathf.Max(1, maxActiveBullets);
+        int desiredPoolSize = Mathf.Max(1, ResolveActiveMaxActiveBullets());
         if (desiredPoolSize <= _preparedPoolSize)
             return;
 
@@ -565,7 +640,7 @@ public sealed class BulletSpawner : MonoBehaviour
         int growStep = Mathf.Max(1, ResolveSafeMaxVolleyCount());
 
         if (!SpawnKit.EnsurePoolCapacity(
-                bulletSpawnable,
+                activeSpawnable,
                 desiredPoolSize,
                 prewarmCount,
                 growStep,
@@ -577,9 +652,11 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private int ResolveSafeMaxVolleyCount()
     {
-        int safeMaxVolley = maxBulletsPerVolley > 0
-            ? Mathf.Min(maxBulletsPerVolley, maxActiveBullets)
-            : Mathf.Max(1, maxActiveBullets);
+        int maxActiveBulletCount = ResolveActiveMaxActiveBullets();
+        int maxBulletsPerVolleyOverride = ResolveActiveMaxBulletsPerVolley();
+        int safeMaxVolley = maxBulletsPerVolleyOverride > 0
+            ? Mathf.Min(maxBulletsPerVolleyOverride, maxActiveBulletCount)
+            : Mathf.Max(1, maxActiveBulletCount);
 
         if (clampVolleyToSustainableCadence)
             safeMaxVolley = Mathf.Min(safeMaxVolley, ResolveSustainableVolleyCount());
@@ -589,25 +666,30 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private int ResolveSustainableVolleyCount()
     {
-        if (maxActiveBullets <= 0)
+        int maxActiveBulletCount = ResolveActiveMaxActiveBullets();
+        if (maxActiveBulletCount <= 0)
             return 0;
 
-        float safeInterval = Mathf.Max(0.01f, fireInterval);
-        float safeLifetime = Mathf.Max(0.01f, bulletLifetime);
+        float safeInterval = ResolveActiveFireInterval();
+        float safeLifetime = ResolveActiveBulletTimedLifetime();
+        if (safeLifetime <= 0f)
+            return maxActiveBulletCount;
+
         int concurrentVolleyCount = Mathf.Max(1, Mathf.CeilToInt(safeLifetime / safeInterval));
-        return Mathf.Max(1, maxActiveBullets / concurrentVolleyCount);
+        return Mathf.Max(1, maxActiveBulletCount / concurrentVolleyCount);
     }
 
     private void ScheduleNextFireTime()
     {
         float now = Time.time;
+        float activeFireInterval = ResolveActiveFireInterval();
         if (_nextFireTime <= 0f)
         {
-            _nextFireTime = now + fireInterval;
+            _nextFireTime = now + activeFireInterval;
             return;
         }
 
-        _nextFireTime += fireInterval;
+        _nextFireTime += activeFireInterval;
         if (_nextFireTime < now)
             _nextFireTime = now;
     }
@@ -628,42 +710,25 @@ public sealed class BulletSpawner : MonoBehaviour
         return _cachedSpawnManager;
     }
 
-    private Collider ResolveHomeCollider()
+    private HomeController ResolveHomeController()
     {
-        if (homeCollider != null)
-            return homeCollider;
+        if (homeController != null)
+            return homeController;
 
-        AutoAssignHomeCollider();
-        return homeCollider;
+        AutoAssignHomeController();
+        return homeController;
     }
 
-    private void AutoAssignHomeCollider()
+    private void AutoAssignHomeController()
     {
-        if (homeCollider != null)
+        if (homeController != null)
             return;
 
-        var colliders = GetComponentsInChildren<Collider>(true);
-        for (int i = 0; i < colliders.Length; i++)
-        {
-            var candidate = colliders[i];
-            if (candidate == null)
-                continue;
-
-            if (candidate.CompareTag(HomeTag))
-            {
-                homeCollider = candidate;
-                return;
-            }
-        }
-
-        if (TryGetComponent(out Collider localCollider))
-        {
-            homeCollider = localCollider;
+        homeController = GetComponentInParent<HomeController>();
+        if (homeController != null)
             return;
-        }
 
-        if (colliders.Length > 0)
-            homeCollider = colliders[0];
+        homeController = FindAnyObjectByType<HomeController>();
     }
 
     private void AutoAssignBulletSpawnAreaCollider()
@@ -709,67 +774,35 @@ public sealed class BulletSpawner : MonoBehaviour
         CacheSpawnAreaShape();
     }
 
-    private void EnsureHomeTriggerRelays()
+    private void SubscribeToHomeController()
     {
-        Collider resolvedHomeCollider = ResolveHomeCollider();
-        if (resolvedHomeCollider == null)
+        HomeController resolvedHomeController = ResolveHomeController();
+        if (resolvedHomeController == null)
             return;
 
-        RegisterHomeTriggerRelay(resolvedHomeCollider);
+        if (_subscribedHomeController == resolvedHomeController)
+            return;
 
-        var colliders = resolvedHomeCollider.transform.GetComponentsInChildren<Collider>(true);
-        for (int i = 0; i < colliders.Length; i++)
-        {
-            var candidate = colliders[i];
-            RegisterHomeTriggerRelay(candidate);
-        }
+        UnsubscribeFromHomeController();
+        resolvedHomeController.Interaction += HandleHomeInteraction;
+        _subscribedHomeController = resolvedHomeController;
     }
 
-    private void ReleaseHomeTriggerRelays()
+    private void UnsubscribeFromHomeController()
     {
-        Collider resolvedHomeCollider = ResolveHomeCollider();
-        if (resolvedHomeCollider == null)
+        if (_subscribedHomeController == null)
             return;
 
-        UnregisterHomeTriggerRelay(resolvedHomeCollider);
-
-        var colliders = resolvedHomeCollider.transform.GetComponentsInChildren<Collider>(true);
-        for (int i = 0; i < colliders.Length; i++)
-        {
-            UnregisterHomeTriggerRelay(colliders[i]);
-        }
-    }
-
-    private void RegisterHomeTriggerRelay(Collider candidate)
-    {
-        if (candidate == null || candidate.gameObject == gameObject)
-            return;
-
-        if (!IsManagedHomeCollider(candidate))
-            return;
-
-        if (!candidate.TryGetComponent(out BulletSpawnerHomeRelay relay))
-            relay = candidate.gameObject.AddComponent<BulletSpawnerHomeRelay>();
-
-        relay.Register(this, candidate);
-    }
-
-    private void UnregisterHomeTriggerRelay(Collider candidate)
-    {
-        if (candidate == null || candidate.gameObject == gameObject)
-            return;
-
-        if (!candidate.TryGetComponent(out BulletSpawnerHomeRelay relay))
-            return;
-
-        relay.Unregister(this, candidate);
+        _subscribedHomeController.Interaction -= HandleHomeInteraction;
+        _subscribedHomeController = null;
     }
 
     private void RefreshHomeOccupants()
     {
         _playersInsideHome.Clear();
 
-        Collider resolvedHomeCollider = ResolveHomeCollider();
+        HomeController resolvedHomeController = ResolveHomeController();
+        Collider resolvedHomeCollider = resolvedHomeController != null ? resolvedHomeController.HomeCollider : null;
         if (resolvedHomeCollider == null
             || !resolvedHomeCollider.enabled
             || !resolvedHomeCollider.gameObject.activeInHierarchy)
@@ -830,23 +863,11 @@ public sealed class BulletSpawner : MonoBehaviour
 
     private bool IsPlayerRootInsideHome(Transform playerRoot)
     {
-        Collider resolvedHomeCollider = ResolveHomeCollider();
-        if (resolvedHomeCollider == null || playerRoot == null || !playerRoot.gameObject.activeInHierarchy)
+        HomeController resolvedHomeController = ResolveHomeController();
+        if (resolvedHomeController == null || playerRoot == null || !playerRoot.gameObject.activeInHierarchy)
             return false;
 
-        Collider playerCollider = ResolvePrimaryPlayerCollider(playerRoot);
-        if (playerCollider == null)
-            return resolvedHomeCollider.bounds.Contains(playerRoot.position);
-
-        return Physics.ComputePenetration(
-            resolvedHomeCollider,
-            resolvedHomeCollider.transform.position,
-            resolvedHomeCollider.transform.rotation,
-            playerCollider,
-            playerCollider.transform.position,
-            playerCollider.transform.rotation,
-            out _,
-            out _);
+        return resolvedHomeController.IsInside(playerRoot);
     }
 
     private int CollectHomeOverlaps(Collider sourceCollider)
@@ -864,20 +885,6 @@ public sealed class BulletSpawner : MonoBehaviour
             Quaternion.identity,
             Physics.AllLayers,
             QueryTriggerInteraction.Collide);
-    }
-
-    private bool IsManagedHomeCollider(Collider candidate)
-    {
-        if (candidate == null)
-            return false;
-
-        if (candidate == homeCollider)
-            return true;
-
-        if (candidate.CompareTag(HomeTag))
-            return true;
-
-        return homeCollider != null && candidate.transform.IsChildOf(homeCollider.transform);
     }
 
     private Collider ResolveBulletSpawnAreaCollider()
@@ -986,6 +993,11 @@ public sealed class BulletSpawner : MonoBehaviour
         _homeOverlapBuffer = new Collider[requiredSize];
     }
 
+    private int ResolveHitLayerMask()
+    {
+        return targetLayers.value != 0 ? targetLayers.value : Physics.AllLayers;
+    }
+
     private static Transform ResolveTaggedTransform(Collider other, string requiredTag)
     {
         if (other == null)
@@ -1046,7 +1058,7 @@ public sealed class BulletSpawner : MonoBehaviour
     private bool IsEligibleSpawnAreaCollider(Collider candidate)
     {
         return candidate != null
-               && candidate != homeCollider
+               && candidate != (ResolveHomeController() != null ? ResolveHomeController().HomeCollider : null)
                && candidate.enabled
                && !candidate.isTrigger
                && candidate.gameObject != gameObject;

@@ -4,12 +4,9 @@ using UnityEngine;
 public sealed class EnemyHomeTargetService : MonoBehaviour
 {
     private const string RuntimeObjectName = "__EnemyHomeTargetService";
-    private const string HomeTag = "Home";
 
     private static EnemyHomeTargetService _instance;
-
-    private Collider _cachedHomeCollider;
-    private EnemyHomeTargetRelay _cachedHomeRelay;
+    private EventBinder _binder;
 
     public static void EnsureInitialized()
     {
@@ -31,19 +28,34 @@ public sealed class EnemyHomeTargetService : MonoBehaviour
         return _instance;
     }
 
+    private void Awake()
+    {
+        if (_binder == null && !TryGetComponent(out _binder))
+            _binder = gameObject.AddComponent<EventBinder>();
+    }
+
+    private void OnEnable()
+    {
+        if (_binder == null && !TryGetComponent(out _binder))
+            _binder = gameObject.AddComponent<EventBinder>();
+
+        CoreEvents.homeInteraction.Subscribe(HandleHomeInteractionEvent, _binder);
+    }
+
     private void OnDisable()
     {
         if (_instance == this)
             _instance = null;
     }
 
-    public void HandleHomeTriggerEnterFromRelay(Collider sourceCollider, Collider other)
+    private void HandleHomeInteractionEvent(HomeInteractionEvent interactionEvent)
     {
-        if (sourceCollider == null || other == null)
+        if (interactionEvent == null || !interactionEvent.isEnter)
             return;
 
-        Collider homeCollider = ResolveHomeCollider();
-        if (homeCollider == null || sourceCollider != homeCollider)
+        Collider sourceCollider = interactionEvent.sourceCollider;
+        Collider other = interactionEvent.otherCollider;
+        if (sourceCollider == null || other == null)
             return;
 
         Enemy enemy = other.GetComponentInParent<Enemy>();
@@ -53,49 +65,19 @@ public sealed class EnemyHomeTargetService : MonoBehaviour
         enemy.TryResolveHomeImpact(sourceCollider.gameObject.layer);
     }
 
+    public void HandleHomeTriggerEnterFromRelay(Collider sourceCollider, Collider other)
+    {
+        HandleHomeInteractionEvent(new HomeInteractionEvent(
+            null,
+            sourceCollider,
+            sourceCollider,
+            other,
+            HomeInteractionType.Enter));
+    }
+
     private void EnsureSceneBindings()
     {
-        EnsureHomeRelay();
-    }
-
-    private void EnsureHomeRelay()
-    {
-        Collider homeCollider = ResolveHomeCollider();
-        if (homeCollider == null)
-            return;
-
-        if (!homeCollider.TryGetComponent(out _cachedHomeRelay))
-            _cachedHomeRelay = homeCollider.gameObject.AddComponent<EnemyHomeTargetRelay>();
-
-        _cachedHomeRelay.Initialize(this, homeCollider);
-
-        if (!homeCollider.TryGetComponent(out Rigidbody homeRigidbody))
-        {
-            homeRigidbody = homeCollider.gameObject.AddComponent<Rigidbody>();
-            homeRigidbody.isKinematic = true;
-            homeRigidbody.useGravity = false;
-        }
-    }
-
-    private Collider ResolveHomeCollider()
-    {
-        if (_cachedHomeCollider != null
-            && _cachedHomeCollider.gameObject.activeInHierarchy)
-        {
-            return _cachedHomeCollider;
-        }
-
-        GameObject homeObject = GameObject.FindGameObjectWithTag(HomeTag);
-        if (homeObject == null)
-        {
-            _cachedHomeCollider = null;
-            return null;
-        }
-
-        _cachedHomeCollider = homeObject.GetComponent<Collider>();
-        if (_cachedHomeCollider == null)
-            _cachedHomeCollider = homeObject.GetComponentInChildren<Collider>(true);
-
-        return _cachedHomeCollider;
+        if (_binder == null && !TryGetComponent(out _binder))
+            _binder = gameObject.AddComponent<EventBinder>();
     }
 }

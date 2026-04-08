@@ -142,6 +142,70 @@ public sealed class EnemyHomeDamageBatchEvent
     }
 }
 
+public sealed class TeammateWeaponPickupEvent
+{
+    public Teammate collector { get; set; }
+    public WeaponSO weaponData { get; set; }
+    public WeaponPickupItem sourcePickup { get; set; }
+
+    public bool hasValidWeaponData => collector != null && weaponData != null && weaponData.IsValid;
+
+    public TeammateWeaponPickupEvent()
+    {
+        collector = null;
+        weaponData = null;
+        sourcePickup = null;
+    }
+
+    public TeammateWeaponPickupEvent(Teammate collector, WeaponSO weaponData, WeaponPickupItem sourcePickup)
+    {
+        this.collector = collector;
+        this.weaponData = weaponData;
+        this.sourcePickup = sourcePickup;
+    }
+}
+
+public enum HomeInteractionType
+{
+    Enter = 0,
+    Exit = 1,
+}
+
+public sealed class HomeInteractionEvent
+{
+    public HomeController controller { get; set; }
+    public Collider homeCollider { get; set; }
+    public Collider sourceCollider { get; set; }
+    public Collider otherCollider { get; set; }
+    public HomeInteractionType interactionType { get; set; }
+
+    public bool isEnter => interactionType == HomeInteractionType.Enter;
+    public bool isExit => interactionType == HomeInteractionType.Exit;
+
+    public HomeInteractionEvent()
+    {
+        controller = null;
+        homeCollider = null;
+        sourceCollider = null;
+        otherCollider = null;
+        interactionType = HomeInteractionType.Enter;
+    }
+
+    public HomeInteractionEvent(
+        HomeController controller,
+        Collider homeCollider,
+        Collider sourceCollider,
+        Collider otherCollider,
+        HomeInteractionType interactionType)
+    {
+        this.controller = controller;
+        this.homeCollider = homeCollider;
+        this.sourceCollider = sourceCollider;
+        this.otherCollider = otherCollider;
+        this.interactionType = interactionType;
+    }
+}
+
 public static class CoreEvents
 {
     public static string LastEventName;
@@ -160,4 +224,16 @@ public static class CoreEvents
     /// Event batch khi enemy cham Home va da duoc tong hop damage theo EnemySpawner.
     /// </summary>
     public static readonly EventHub<EnemyHomeDamageBatchEvent> enemyHomeDamageBatch = new EventHub<EnemyHomeDamageBatchEvent>();
+
+    /// <summary>
+    /// Event khi pickup weapon duoc teammate nhat.
+    /// </summary>
+    public static readonly EventHub<TeammateWeaponPickupEvent> teammateWeaponPickup =
+        new EventHub<TeammateWeaponPickupEvent>();
+
+    /// <summary>
+    /// Event trigger tong hop cua Home de cac he thong khac cung consume.
+    /// </summary>
+    public static readonly EventHub<HomeInteractionEvent> homeInteraction =
+        new EventHub<HomeInteractionEvent>();
 }
