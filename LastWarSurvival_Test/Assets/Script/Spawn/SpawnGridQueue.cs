@@ -52,13 +52,7 @@ public class SpawnGridQueue : CoreEventBase
     protected int PendingSpawnCount => _pendingSpawnCount;
     protected bool HasPendingSpawnRequests => _pendingSpawnCount > 0 || _spawnRoutine != null;
 
-    protected virtual void Start()
-    {
-        if (prewarmPoolOnStart)
-            PreparePool(ResolveSafeMaxSpawnPerFrame());
-    }
-
-    protected virtual void OnDisable()
+    protected void ResetPendingSpawnQueue()
     {
         if (_spawnRoutine != null)
         {
@@ -68,6 +62,17 @@ public class SpawnGridQueue : CoreEventBase
 
         CancelSpawnRequests();
         _pendingSpawnCount = 0;
+    }
+
+    protected virtual void Start()
+    {
+        if (prewarmPoolOnStart)
+            PreparePool(ResolveSafeMaxSpawnPerFrame());
+    }
+
+    protected virtual void OnDisable()
+    {
+        ResetPendingSpawnQueue();
     }
 
     public override void SubscribeEvents()

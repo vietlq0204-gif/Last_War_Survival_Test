@@ -18,6 +18,14 @@ public class EnemySpawner : SpawnGridQueue
     [Tooltip("If enabled, this grid queues a fill request on Start.")]
     [SerializeField] private bool fillAvailableSlotsOnStart;
 
+    [Header("Obstacle Probe")]
+    [SerializeField] private bool useBatchedObstacleProbe = true;
+    [SerializeField] private LayerMask obstacleProbeLayers;
+    [SerializeField, Min(1)] private int obstacleProbeBatchSize = 16;
+    [SerializeField, Min(1)] private int obstacleProbeHitBufferSize = 8;
+    [SerializeField, Min(0f)] private float obstacleProbeExtraRadius = 0.05f;
+    [SerializeField, Min(0)] private int obstacleProbeCooldownFrames = 4;
+
     [Header("Home Damage Batch")]
     [SerializeField, Min(0)] private int homeDamageDispatchDelayFrames = 2;
 
@@ -25,6 +33,10 @@ public class EnemySpawner : SpawnGridQueue
     private Collider[] _overlapBuffer;
     private readonly HashSet<EntityId> _aliveEnemyIds = new HashSet<EntityId>();
     private readonly HashSet<long> _blockedSlotKeys = new HashSet<long>();
+    private readonly List<Enemy> _activeEnemiesBuffer = new List<Enemy>(64);
+    private readonly List<Enemy> _unassignedEnemiesBuffer = new List<Enemy>(32);
+    private readonly List<Enemy> _overflowEnemiesBuffer = new List<Enemy>(16);
+    private Collider[] _obstacleProbeHits;
     private EnemyGridGroup _owningGroup;
     private bool _hasPendingEmptyRecycleRequest;
     private int _pendingHomeDamage;
@@ -35,10 +47,16 @@ public class EnemySpawner : SpawnGridQueue
     private Vector3 _lastMotionSamplePosition;
     private Vector3 _pathMoveDirection = Vector3.forward;
     private float _pathMoveSpeed;
+    private int _nextObstacleProbeStartIndex;
 
     private void OnValidate()
     {
         homeDamageDispatchDelayFrames = Mathf.Max(0, homeDamageDispatchDelayFrames);
+        obstacleProbeBatchSize = Mathf.Max(1, obstacleProbeBatchSize);
+        obstacleProbeHitBufferSize = Mathf.Max(1, obstacleProbeHitBufferSize);
+        obstacleProbeExtraRadius = Mathf.Max(0f, obstacleProbeExtraRadius);
+        obstacleProbeCooldownFrames = Mathf.Max(0, obstacleProbeCooldownFrames);
+        EnsureObstacleProbeLayer();
     }
 
     protected override string SpawnedObjectLabel => "enemy";
@@ -62,6 +80,7 @@ public class EnemySpawner : SpawnGridQueue
         _homeDamageDispatchFrame = -1;
         _pendingHomeCollisionLayer = -1;
         _blockedSlotKeys.Clear();
+        _nextObstacleProbeStartIndex = 0;
         SyncBlockedSlotsWithAlgorithm();
     }
 
@@ -69,6 +88,20 @@ public class EnemySpawner : SpawnGridQueue
     {
         int requestCount = Mathf.Max(0, GetAvailableSlotCount() - PendingSpawnCount);
         return requestCount > 0 && QueueSpawn(requestCount);
+    }
+
+    public void RecycleAndRefillSlots()
+    {
+        ResetPendingSpawnQueue();
+        ResetBlockedSlots();
+        _nextObstacleProbeStartIndex = 0;
+
+        ColliderSurfaceGridAlgorithm algorithm = ResolveGridAlgorithm();
+        if (algorithm == null)
+            return;
+
+        ReassignActiveEnemiesToSlots(algorithm);
+        FillAvailableSlots();
     }
 
     public int GetAvailableSlotCount()
@@ -180,6 +213,7 @@ public class EnemySpawner : SpawnGridQueue
     private void LateUpdate()
     {
         SamplePathMotion();
+        ScanObstacleContactsBatch();
     }
 
     public bool TryGetPathMotion(out Vector3 moveDirection, out float moveSpeed)
@@ -474,6 +508,93 @@ public class EnemySpawner : SpawnGridQueue
         algorithm?.SetBlockedSlots(_blockedSlotKeys);
     }
 
+    private void ScanObstacleContactsBatch()
+    {
+        if (!useBatchedObstacleProbe)
+            return;
+
+        int obstacleLayerMask = ResolveObstacleProbeMask();
+        if (obstacleLayerMask == 0)
+            return;
+
+        CollectActiveAliveEnemies(_activeEnemiesBuffer);
+        int activeCount = _activeEnemiesBuffer.Count;
+        if (activeCount <= 0)
+        {
+            _nextObstacleProbeStartIndex = 0;
+            return;
+        }
+
+        EnsureObstacleProbeHitBuffer();
+
+        int batchSize = Mathf.Min(Mathf.Max(1, obstacleProbeBatchSize), activeCount);
+        int startIndex = Mathf.Clamp(_nextObstacleProbeStartIndex, 0, Mathf.Max(0, activeCount - 1));
+
+        for (int offset = 0; offset < batchSize; offset++)
+        {
+            int enemyIndex = (startIndex + offset) % activeCount;
+            Enemy enemy = _activeEnemiesBuffer[enemyIndex];
+            if (enemy == null || !enemy.IsAlive)
+                continue;
+
+            if (!enemy.TryGetObstacleProbeCapsule(
+                    obstacleProbeExtraRadius,
+                    out Vector3 point0,
+                    out Vector3 point1,
+                    out float radius))
+            {
+                continue;
+            }
+
+            int hitCount = Physics.OverlapCapsuleNonAlloc(
+                point0,
+                point1,
+                radius,
+                _obstacleProbeHits,
+                obstacleLayerMask,
+                QueryTriggerInteraction.Collide);
+
+            for (int hitIndex = 0; hitIndex < hitCount; hitIndex++)
+            {
+                Collider obstacle = _obstacleProbeHits[hitIndex];
+                if (obstacle == null)
+                    continue;
+
+                if (enemy.TryHandleObstacleProbe(obstacle, Time.frameCount, obstacleProbeCooldownFrames))
+                    break;
+            }
+        }
+
+        _nextObstacleProbeStartIndex = (startIndex + batchSize) % activeCount;
+    }
+
+    private void EnsureObstacleProbeHitBuffer()
+    {
+        int desiredSize = Mathf.Max(1, obstacleProbeHitBufferSize);
+        if (_obstacleProbeHits != null && _obstacleProbeHits.Length == desiredSize)
+            return;
+
+        _obstacleProbeHits = new Collider[desiredSize];
+    }
+
+    private int ResolveObstacleProbeMask()
+    {
+        EnsureObstacleProbeLayer();
+        return obstacleProbeLayers.value;
+    }
+
+    private void EnsureObstacleProbeLayer()
+    {
+        if (obstacleProbeLayers.value != 0)
+            return;
+
+        int obstacleLayer = LayerMask.NameToLayer("Obstacle");
+        if (obstacleLayer < 0)
+            return;
+
+        obstacleProbeLayers = 1 << obstacleLayer;
+    }
+
     private static bool TryResolveObstaclePlacement(
         ColliderSurfaceGridAlgorithm algorithm,
         uint seed,
@@ -505,6 +626,112 @@ public class EnemySpawner : SpawnGridQueue
                 shouldReservePlacement = true;
                 return true;
         }
+    }
+
+    private void ReassignActiveEnemiesToSlots(ColliderSurfaceGridAlgorithm algorithm)
+    {
+        _activeEnemiesBuffer.Clear();
+        _unassignedEnemiesBuffer.Clear();
+        _overflowEnemiesBuffer.Clear();
+
+        CollectActiveAliveEnemies(_activeEnemiesBuffer);
+
+        for (int i = 0; i < _activeEnemiesBuffer.Count; i++)
+        {
+            Enemy enemy = _activeEnemiesBuffer[i];
+            if (enemy == null)
+                continue;
+
+            if (TrySnapReservedEnemyToSlot(algorithm, enemy))
+                continue;
+
+            _unassignedEnemiesBuffer.Add(enemy);
+        }
+
+        for (int i = 0; i < _unassignedEnemiesBuffer.Count; i++)
+        {
+            Enemy enemy = _unassignedEnemiesBuffer[i];
+            if (enemy == null)
+                continue;
+
+            if (TryAssignEnemyToAvailableSlot(algorithm, enemy))
+                continue;
+
+            _overflowEnemiesBuffer.Add(enemy);
+        }
+
+        for (int i = 0; i < _overflowEnemiesBuffer.Count; i++)
+        {
+            Enemy overflowEnemy = _overflowEnemiesBuffer[i];
+            overflowEnemy?.DespawnForRecycle();
+        }
+    }
+
+    private void CollectActiveAliveEnemies(List<Enemy> results)
+    {
+        if (results == null)
+            return;
+
+        results.Clear();
+
+        Transform root = transform;
+        int childCount = root.childCount;
+
+        for (int i = 0; i < childCount; i++)
+        {
+            Transform child = root.GetChild(i);
+            if (child == null || !child.gameObject.activeInHierarchy)
+                continue;
+
+            if (!child.TryGetComponent(out Enemy enemy) || !enemy.IsAlive)
+                continue;
+
+            results.Add(enemy);
+        }
+    }
+
+    private bool TrySnapReservedEnemyToSlot(ColliderSurfaceGridAlgorithm algorithm, Enemy enemy)
+    {
+        if (algorithm == null || enemy == null)
+            return false;
+
+        if (!enemy.TryGetComponent(out SpawnGridSlotReservation reservation) || !reservation.IsBound)
+            return false;
+
+        if (!algorithm.TryGetPlacementPose(reservation.SlotKey, out Vector3 worldPosition, out Quaternion worldRotation))
+        {
+            reservation.ReleaseReservationNow();
+            return false;
+        }
+
+        Vector3 localPosition = transform.InverseTransformPoint(worldPosition);
+        Quaternion localRotation = Quaternion.Inverse(transform.rotation) * worldRotation;
+
+        if (enemy.transform.parent != transform)
+            enemy.transform.SetParent(transform, true);
+
+        enemy.SnapToGridSlot(localPosition, localRotation);
+        return true;
+    }
+
+    private bool TryAssignEnemyToAvailableSlot(ColliderSurfaceGridAlgorithm algorithm, Enemy enemy)
+    {
+        if (algorithm == null || enemy == null)
+            return false;
+
+        if (!algorithm.TryGetNearestAvailablePlacement(enemy.transform.position, null, out ColliderSurfaceGridPlacement placement))
+            return false;
+
+        algorithm.BindReservation(enemy.gameObject, in placement);
+
+        Vector3 localPosition = transform.InverseTransformPoint(placement.Position);
+        Quaternion localRotation = Quaternion.Inverse(transform.rotation) * placement.Rotation;
+
+        if (enemy.transform.parent != transform)
+            enemy.transform.SetParent(transform, true);
+
+        enemy.SnapToGridSlot(localPosition, localRotation);
+        return true;
     }
 
     private static Vector3 ResolveSlotOffset(Vector3 slotLocalPosition, float nearbyDistance)

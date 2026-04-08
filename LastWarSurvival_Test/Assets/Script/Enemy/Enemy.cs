@@ -33,6 +33,10 @@ public class Enemy : ObjectSpawned
     private bool _isMovingToObstacleSlot;
     private Vector3 _obstacleTargetLocalPosition;
     private Quaternion _obstacleTargetLocalRotation;
+    private CapsuleCollider _cachedObstacleProbeCapsule;
+    private Collider _cachedObstacleProbeCollider;
+    private Collider _lastHandledObstacle;
+    private int _lastHandledObstacleFrame = int.MinValue;
 
     public int MaxHealth => maxHealth;
     public int CurrentHealth => _currentHealth;
@@ -70,6 +74,8 @@ public class Enemy : ObjectSpawned
         _isMovingToObstacleSlot = false;
         _obstacleTargetLocalPosition = Vector3.zero;
         _obstacleTargetLocalRotation = Quaternion.identity;
+        _lastHandledObstacle = null;
+        _lastHandledObstacleFrame = int.MinValue;
         _currentHealth = Mathf.Max(1, maxHealth);
         EnsureHitDetectionLayer();
         EnsureObstacleAvoidanceLayer();
@@ -89,6 +95,8 @@ public class Enemy : ObjectSpawned
         _isMovingToObstacleSlot = false;
         _obstacleTargetLocalPosition = Vector3.zero;
         _obstacleTargetLocalRotation = Quaternion.identity;
+        _lastHandledObstacle = null;
+        _lastHandledObstacleFrame = int.MinValue;
         _currentHealth = Mathf.Max(1, maxHealth);
         RestoreDefaultRendererStates();
         base.OnDespawnedToPool();
@@ -113,6 +121,111 @@ public class Enemy : ObjectSpawned
             return;
 
         HandleDefeat();
+    }
+
+    public void SnapToGridSlot(Vector3 localPosition, Quaternion localRotation)
+    {
+        _isMovingToObstacleSlot = false;
+        _obstacleTargetLocalPosition = localPosition;
+        _obstacleTargetLocalRotation = localRotation;
+        transform.localPosition = localPosition;
+        transform.localRotation = localRotation;
+    }
+
+    public void DespawnForRecycle()
+    {
+        if (_isDead || !gameObject.activeInHierarchy)
+            return;
+
+        _isDead = true;
+        _currentHealth = 0;
+        _isMovingToObstacleSlot = false;
+        ReleaseGridReservation();
+
+        EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
+        owningSpawner?.NotifyEnemyExitedGrid(this);
+        _owningSpawner = null;
+
+        SetControlledCollisionEnabled(false);
+        SetRenderersVisible(false);
+        BufferedPoolDespawnQueue.Queue(this);
+    }
+
+    public bool TryHandleObstacleProbe(Collider obstacle, int frameCount, int cooldownFrames)
+    {
+        if (_isDead || obstacle == null || !IsObstacleLayer(obstacle.gameObject.layer))
+            return false;
+
+        if (obstacle.transform.IsChildOf(transform))
+            return false;
+
+        int safeCooldownFrames = Mathf.Max(0, cooldownFrames);
+        if (_lastHandledObstacle == obstacle && frameCount - _lastHandledObstacleFrame <= safeCooldownFrames)
+            return false;
+
+        _lastHandledObstacle = obstacle;
+        _lastHandledObstacleFrame = frameCount;
+        BeginOrRefreshObstacleReposition();
+        return true;
+    }
+
+    public bool TryGetObstacleProbeCapsule(float extraRadius, out Vector3 point0, out Vector3 point1, out float radius)
+    {
+        point0 = transform.position;
+        point1 = transform.position;
+        radius = 0f;
+
+        EnsureObstacleProbeColliderCache();
+
+        if (_cachedObstacleProbeCapsule != null)
+        {
+            Transform targetTransform = _cachedObstacleProbeCapsule.transform;
+            Vector3 lossyScale = targetTransform.lossyScale;
+            Vector3 absLossyScale = new Vector3(
+                Mathf.Abs(lossyScale.x),
+                Mathf.Abs(lossyScale.y),
+                Mathf.Abs(lossyScale.z));
+
+            int direction = _cachedObstacleProbeCapsule.direction;
+            float axisScale = direction == 0
+                ? absLossyScale.x
+                : direction == 1
+                    ? absLossyScale.y
+                    : absLossyScale.z;
+            float radialScale = direction == 0
+                ? Mathf.Max(absLossyScale.y, absLossyScale.z)
+                : direction == 1
+                    ? Mathf.Max(absLossyScale.x, absLossyScale.z)
+                    : Mathf.Max(absLossyScale.x, absLossyScale.y);
+
+            radius = Mathf.Max(0.01f, _cachedObstacleProbeCapsule.radius * radialScale + Mathf.Max(0f, extraRadius));
+
+            float scaledHeight = Mathf.Max(_cachedObstacleProbeCapsule.height * axisScale, radius * 2f);
+            float axialExtent = Mathf.Max(0f, scaledHeight * 0.5f - radius);
+            Vector3 axis = direction == 0
+                ? targetTransform.right
+                : direction == 1
+                    ? targetTransform.up
+                    : targetTransform.forward;
+
+            Vector3 center = targetTransform.TransformPoint(_cachedObstacleProbeCapsule.center);
+            point0 = center + axis * axialExtent;
+            point1 = center - axis * axialExtent;
+            return true;
+        }
+
+        if (_cachedObstacleProbeCollider == null)
+            return false;
+
+        Bounds bounds = _cachedObstacleProbeCollider.bounds;
+        Vector3 centerPoint = bounds.center;
+        float fallbackRadius = Mathf.Max(bounds.extents.x, bounds.extents.z) + Mathf.Max(0f, extraRadius);
+        float verticalExtent = Mathf.Max(0f, bounds.extents.y - fallbackRadius);
+
+        point0 = centerPoint + Vector3.up * verticalExtent;
+        point1 = centerPoint - Vector3.up * verticalExtent;
+        radius = Mathf.Max(0.01f, fallbackRadius);
+        return true;
     }
 
     public bool CanDespawnOnCollisionLayer(int collisionLayer)
@@ -266,6 +379,17 @@ public class Enemy : ObjectSpawned
         {
             _defaultRendererStates[i] = _cachedRenderers[i] != null && _cachedRenderers[i].enabled;
         }
+    }
+
+    private void EnsureObstacleProbeColliderCache()
+    {
+        if (_cachedObstacleProbeCapsule == null)
+            _cachedObstacleProbeCapsule = GetComponent<CapsuleCollider>();
+
+        if (_cachedObstacleProbeCollider == null)
+            _cachedObstacleProbeCollider = _cachedObstacleProbeCapsule != null
+                ? _cachedObstacleProbeCapsule
+                : GetComponent<Collider>();
     }
 
     private void RestoreDefaultRendererStates()
