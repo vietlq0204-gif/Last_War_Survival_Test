@@ -43,6 +43,9 @@ public sealed class TeammateController : CoreEventBase
     private float _dragStartWorldX;
     private float _dragTargetX;
     private Collider _cachedPlayerCollider;
+    private bool _isGameStarted;
+    private bool _hasSeenLivingTeammateThisSession;
+    private bool _hasRaisedGameOverEvent;
 
     public int CurrentHealth => Mathf.Max(0, _currentHealth);
     public int MaxHealth => MultiplyClamped(_activeTeammates.Count, ResolveHealthPerTeammate());
@@ -69,6 +72,7 @@ public sealed class TeammateController : CoreEventBase
         ApplyHorizontalMovement();
         ProcessPendingIncomingDamage();
         FlushQueuedTeammateDespawns();
+        NotifyGameOverIfNeeded();
     }
 
     private void OnDisable()
@@ -83,6 +87,9 @@ public sealed class TeammateController : CoreEventBase
         _dragUsesTouch = false;
         _activeTouchFingerId = -1;
         _dragTargetX = transform.position.x;
+        _isGameStarted = false;
+        _hasSeenLivingTeammateThisSession = false;
+        _hasRaisedGameOverEvent = false;
     }
 
     public override void SubscribeEvents()
@@ -90,6 +97,7 @@ public sealed class TeammateController : CoreEventBase
         LogFlow("Subscribing to enemyHomeDamageBatch and teammateWeaponPickup.");
         CoreEvents.enemyHomeDamageBatch.Subscribe(HandleEnemyHomeDamageBatchEvent, Binder);
         CoreEvents.teammateWeaponPickup.Subscribe(HandleTeammateWeaponPickupEvent, Binder);
+        CoreEvents.gameStart.Subscribe(HandleGameStartEvent, Binder);
     }
 
     public void RegisterSpawnedTeammate(Teammate teammate)
@@ -105,6 +113,8 @@ public sealed class TeammateController : CoreEventBase
         _activeTeammates.Add(teammate);
         _currentHealth = Mathf.Max(0, _currentHealth) + ResolveHealthPerTeammate();
         ClampCurrentHealthToCapacity();
+        _hasSeenLivingTeammateThisSession = true;
+        _hasRaisedGameOverEvent = false;
         teammate.ApplyWeaponVisual(ResolveActiveWeapon());
         LogFlow(
             $"Registered teammate='{teammate.name}#{teammateId}'. activeCount={_activeTeammates.Count} currentHealth={_currentHealth} maxHealth={MaxHealth}.",
@@ -179,6 +189,16 @@ public sealed class TeammateController : CoreEventBase
         QueueIncomingDamage(damageBatchEvent.totalDamage);
     }
 
+    private void HandleGameStartEvent(GameStartEvent gameStartEvent)
+    {
+        if (gameStartEvent == null || !gameStartEvent.IsStarted)
+            return;
+
+        _isGameStarted = true;
+        _hasSeenLivingTeammateThisSession = _activeTeammates.Count > 0;
+        _hasRaisedGameOverEvent = false;
+    }
+
     private void HandleTeammateWeaponPickupEvent(TeammateWeaponPickupEvent pickupEvent)
     {
         if (pickupEvent == null || !pickupEvent.hasValidWeaponData)
@@ -233,6 +253,21 @@ public sealed class TeammateController : CoreEventBase
             warning: despawnCount > 0);
         QueueTeammatesForDamageDespawn(despawnCount);
         ClampCurrentHealthToCapacity();
+    }
+
+    private void NotifyGameOverIfNeeded()
+    {
+        if (!_isGameStarted || _hasRaisedGameOverEvent || !_hasSeenLivingTeammateThisSession)
+            return;
+
+        if (_activeTeammates.Count > 0 || _currentHealth > 0 || _pendingIncomingDamage > 0 || _pendingDamageDespawns.Count > 0)
+            return;
+
+        _hasRaisedGameOverEvent = true;
+        CoreEvents.gameOver.Raise(new GameOverEvent
+        {
+            IsGameOver = true
+        });
     }
 
     private void QueueTeammatesForDamageDespawn(int count)

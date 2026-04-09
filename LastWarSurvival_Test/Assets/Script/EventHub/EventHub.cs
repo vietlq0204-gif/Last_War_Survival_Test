@@ -43,6 +43,16 @@ public sealed class GameStartEvent
     }
 }
 
+public sealed class GameOverEvent
+{
+    public bool IsGameOver { get; set; }
+
+    public GameOverEvent()
+    {
+        IsGameOver = true;
+    }
+}
+
 public struct ObjectSpawnInstruction
 {
     public ObjectSpawned SpawnedObject { get; set; }
@@ -214,6 +224,11 @@ public static class CoreEvents
     /// Event bat dau game.
     /// </summary>
     public static readonly EventHub<GameStartEvent> gameStart = new EventHub<GameStartEvent>();
+
+    /// <summary>
+    /// Event ket thuc game khi doi teammate khong con ai song.
+    /// </summary>
+    public static readonly EventHub<GameOverEvent> gameOver = new EventHub<GameOverEvent>();
 
     /// <summary>
     /// Event va cham tong hop, hien tai duoc dung cho luong CardAddQuantity -> Player.
