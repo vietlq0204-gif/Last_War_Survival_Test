@@ -168,6 +168,30 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
         return found;
     }
 
+    public static bool TryGetClosestPickupCollector(Vector3 referencePosition, out Teammate collector)
+    {
+        collector = null;
+        float bestDistanceSqr = float.PositiveInfinity;
+        bool found = false;
+
+        foreach (Teammate teammate in ActivePickupCollectors)
+        {
+            if (teammate == null || !teammate.CanCollectPickups)
+                continue;
+
+            Transform teammateTransform = teammate.CachedTransform != null ? teammate.CachedTransform : teammate.transform;
+            float distanceSqr = (teammateTransform.position - referencePosition).sqrMagnitude;
+            if (found && distanceSqr >= bestDistanceSqr)
+                continue;
+
+            bestDistanceSqr = distanceSqr;
+            collector = teammate;
+            found = true;
+        }
+
+        return found;
+    }
+
     private void ResetAssignedFormationSlot()
     {
         _assignedSlotAlgorithm = null;

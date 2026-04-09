@@ -3,6 +3,7 @@ using UnityEngine;
 public class TeammateSpawner : SpawnGridQueue
 {
     [SerializeField] private TeammateController teammateController;
+    [SerializeField, Min(0)] private int initialSpawnCountOnGameStart = 1;
 
     protected override string SpawnedObjectLabel => "teammate";
 
@@ -16,6 +17,7 @@ public class TeammateSpawner : SpawnGridQueue
     {
         base.SubscribeEvents();
         CoreEvents.collition.Subscribe(HandleCollitionEvent, Binder);
+        CoreEvents.gameStart.Subscribe(HandleGameStart, Binder);
     }
 
     private void HandleCollitionEvent(CollitionEvent collitionEvent)
@@ -28,6 +30,20 @@ public class TeammateSpawner : SpawnGridQueue
         if (cardData == null || !cardData.HasValidData) return;
 
         QueueSpawn(cardData.TeammateSpawnCount);
+    }
+
+    private void HandleGameStart(GameStartEvent gameStartEvent)
+    {
+        if (gameStartEvent == null || !gameStartEvent.IsStarted)
+            return;
+
+        if (initialSpawnCountOnGameStart <= 0)
+            return;
+
+        if (ActiveTeammateCount > 0 || HasPendingSpawnRequests)
+            return;
+
+        QueueSpawn(initialSpawnCountOnGameStart);
     }
 
     public override int GetOccupiedSlotCount()
