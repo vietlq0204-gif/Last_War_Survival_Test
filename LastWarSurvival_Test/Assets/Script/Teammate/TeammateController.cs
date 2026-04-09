@@ -105,6 +105,7 @@ public sealed class TeammateController : CoreEventBase
         _activeTeammates.Add(teammate);
         _currentHealth = Mathf.Max(0, _currentHealth) + ResolveHealthPerTeammate();
         ClampCurrentHealthToCapacity();
+        teammate.ApplyWeaponVisual(ResolveActiveWeapon());
         LogFlow(
             $"Registered teammate='{teammate.name}#{teammateId}'. activeCount={_activeTeammates.Count} currentHealth={_currentHealth} maxHealth={MaxHealth}.",
             teammate);
@@ -325,6 +326,8 @@ public sealed class TeammateController : CoreEventBase
     private void ApplyEquippedWeapon()
     {
         WeaponSO activeWeapon = ResolveActiveWeapon();
+        ApplyWeaponVisualToActiveTeammates(activeWeapon);
+
         BulletSpawner resolvedBulletSpawner = ResolveBulletSpawner();
         if (resolvedBulletSpawner == null)
         {
@@ -361,6 +364,18 @@ public sealed class TeammateController : CoreEventBase
             bulletSpawner = transform.parent.GetComponentInChildren<BulletSpawner>(true);
 
         return bulletSpawner;
+    }
+
+    private void ApplyWeaponVisualToActiveTeammates(WeaponSO weapon)
+    {
+        for (int i = _activeTeammates.Count - 1; i >= 0; i--)
+        {
+            Teammate teammate = _activeTeammates[i];
+            if (teammate == null)
+                continue;
+
+            teammate.ApplyWeaponVisual(weapon);
+        }
     }
 
     private void HandlePlayerDragInput()

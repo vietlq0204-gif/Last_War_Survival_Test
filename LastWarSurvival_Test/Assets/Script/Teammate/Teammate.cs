@@ -20,6 +20,10 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
     private ColliderSurfaceGridAlgorithm _assignedSlotAlgorithm;
     private Renderer[] _cachedRenderers;
     private bool[] _defaultRendererStates;
+    private Transform _runtimeWeaponVisualRoot;
+    private GameObject _runtimeWeaponVisualInstance;
+    private Renderer[] _runtimeWeaponVisualRenderers;
+    private bool _hideDefaultRenderersForWeaponVisual;
     private long _assignedSlotKey;
     private Vector3 _lastResolvedSlotPosition;
     private Quaternion _lastResolvedSlotRotation;
@@ -78,6 +82,7 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
     {
         ResetAssignedFormationSlot();
         _isQueuedForDamageDespawn = false;
+        ClearWeaponVisual();
         RestoreDefaultRendererStates();
         ActivePickupCollectors.Add(this);
         base.OnSpawnedFromPool();
@@ -94,6 +99,7 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
         _owningSpawner = null;
         _isQueuedForDamageDespawn = false;
         ResetAssignedFormationSlot();
+        ClearWeaponVisual();
         RestoreDefaultRendererStates();
         base.OnDespawnedToPool();
     }
@@ -138,6 +144,30 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
         SetRenderersVisible(false);
         LogFlow("BeginQueuedDamageDespawn accepted. Collider disabled and renderers hidden.", warning: true);
         return true;
+    }
+
+    public void ApplyWeaponVisual(WeaponSO weapon)
+    {
+        GameObject visualPrefab = weapon != null ? weapon.TeammateVisualPrefab : null;
+        ClearWeaponVisual();
+
+        if (visualPrefab == null)
+        {
+            RefreshVisualVisibility();
+            return;
+        }
+
+        Transform visualRoot = ResolveRuntimeWeaponVisualRoot();
+        _runtimeWeaponVisualInstance = Instantiate(visualPrefab, visualRoot, false);
+        _runtimeWeaponVisualInstance.name = $"{visualPrefab.name}_RuntimeVisual";
+        _runtimeWeaponVisualInstance.transform.localPosition = weapon.TeammateVisualLocalPosition;
+        _runtimeWeaponVisualInstance.transform.localRotation = weapon.TeammateVisualLocalRotation;
+        _runtimeWeaponVisualInstance.transform.localScale = weapon.TeammateVisualLocalScale;
+        _hideDefaultRenderersForWeaponVisual = weapon.HideDefaultTeammateModelWhenEquipped;
+        _runtimeWeaponVisualRenderers = _runtimeWeaponVisualInstance.GetComponentsInChildren<Renderer>(true);
+
+        SanitizeWeaponVisualInstance(_runtimeWeaponVisualInstance);
+        RefreshVisualVisibility();
     }
 
     public static bool TryGetClosestPickupCollector(Vector3 referencePosition, float maxDistance, out Teammate collector)
@@ -235,8 +265,10 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
             if (cachedRenderer == null)
                 continue;
 
-            cachedRenderer.enabled = _defaultRendererStates[i];
+            cachedRenderer.enabled = !_hideDefaultRenderersForWeaponVisual && _defaultRendererStates[i];
         }
+
+        SetRuntimeWeaponVisualVisible(true);
     }
 
     private void SetRenderersVisible(bool isVisible)
@@ -250,7 +282,92 @@ public class Teammate : ObjectSpawned, IFormationSlotSpawnReceiver
             if (cachedRenderer == null)
                 continue;
 
-            cachedRenderer.enabled = isVisible && _defaultRendererStates[i];
+            cachedRenderer.enabled = isVisible && !_hideDefaultRenderersForWeaponVisual && _defaultRendererStates[i];
+        }
+
+        SetRuntimeWeaponVisualVisible(isVisible);
+    }
+
+    private void RefreshVisualVisibility()
+    {
+        bool shouldBeVisible = !_isQueuedForDamageDespawn;
+        SetRenderersVisible(shouldBeVisible);
+    }
+
+    private Transform ResolveRuntimeWeaponVisualRoot()
+    {
+        if (_runtimeWeaponVisualRoot != null)
+            return _runtimeWeaponVisualRoot;
+
+        var visualRootObject = new GameObject("Runtime Weapon Visual Root");
+        visualRootObject.transform.SetParent(transform, false);
+        _runtimeWeaponVisualRoot = visualRootObject.transform;
+        return _runtimeWeaponVisualRoot;
+    }
+
+    private void ClearWeaponVisual()
+    {
+        _hideDefaultRenderersForWeaponVisual = false;
+        _runtimeWeaponVisualRenderers = null;
+
+        if (_runtimeWeaponVisualInstance == null)
+            return;
+
+        _runtimeWeaponVisualInstance.SetActive(false);
+        if (Application.isPlaying)
+            Destroy(_runtimeWeaponVisualInstance);
+        else
+            DestroyImmediate(_runtimeWeaponVisualInstance);
+
+        _runtimeWeaponVisualInstance = null;
+    }
+
+    private void SetRuntimeWeaponVisualVisible(bool isVisible)
+    {
+        if (_runtimeWeaponVisualRenderers == null)
+            return;
+
+        for (int i = 0; i < _runtimeWeaponVisualRenderers.Length; i++)
+        {
+            Renderer runtimeRenderer = _runtimeWeaponVisualRenderers[i];
+            if (runtimeRenderer == null)
+                continue;
+
+            runtimeRenderer.enabled = isVisible;
+        }
+    }
+
+    private static void SanitizeWeaponVisualInstance(GameObject visualInstance)
+    {
+        if (visualInstance == null)
+            return;
+
+        var pickupItem = visualInstance.GetComponent<WeaponPickupItem>();
+        if (pickupItem != null)
+        {
+            pickupItem.enabled = false;
+            if (Application.isPlaying)
+                Destroy(pickupItem);
+            else
+                DestroyImmediate(pickupItem);
+        }
+
+        Collider[] colliders = visualInstance.GetComponentsInChildren<Collider>(true);
+        for (int i = 0; i < colliders.Length; i++)
+        {
+            if (colliders[i] != null)
+                colliders[i].enabled = false;
+        }
+
+        Rigidbody[] rigidbodies = visualInstance.GetComponentsInChildren<Rigidbody>(true);
+        for (int i = 0; i < rigidbodies.Length; i++)
+        {
+            Rigidbody rigidbody = rigidbodies[i];
+            if (rigidbody == null)
+                continue;
+
+            rigidbody.isKinematic = true;
+            rigidbody.useGravity = false;
         }
     }
 
