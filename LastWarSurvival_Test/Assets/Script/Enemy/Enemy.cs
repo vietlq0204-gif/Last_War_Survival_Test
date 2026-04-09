@@ -18,6 +18,12 @@ public class Enemy : ObjectSpawned
     [SerializeField, Min(0), Tooltip("Luong damage enemy gay ra khi cham vao Home.")]
     private int contactDamage = 1;
 
+    [Header("Home Impact")]
+    [SerializeField, Tooltip("Neu bat, enemy se dung lai tai vi tri cham Home va khong con bi grid/path dich chuyen.")]
+    private bool stopAtHomeOnImpact = true;
+    [SerializeField, Tooltip("Bat/tat viec enemy gay damage cho teammate khi cham Home.")]
+    private bool dealDamageToTeammateOnHomeImpact = true;
+
     [Header("Health Bar")]
     [SerializeField, Tooltip("Bat/tat thanh mau world-space tren dau enemy.")]
     private bool showHealthBar = true;
@@ -66,11 +72,12 @@ public class Enemy : ObjectSpawned
     private Collider _cachedObstacleProbeCollider;
     private Collider _lastHandledObstacle;
     private int _lastHandledObstacleFrame = int.MinValue;
+    private bool _isHoldingAtHome;
     public int MaxHealth => maxHealth;
     public int CurrentHealth => _currentHealth;
     public int ContactDamage => Mathf.Max(0, contactDamage);
     public bool IsAlive => !_isDead;
-    public bool CanInteractWithHomeCollider => true;
+    public bool CanInteractWithHomeCollider => !_isHoldingAtHome;
 
     protected override void Awake()
     {
@@ -106,6 +113,7 @@ public class Enemy : ObjectSpawned
         _obstacleTargetLocalRotation = Quaternion.identity;
         _lastHandledObstacle = null;
         _lastHandledObstacleFrame = int.MinValue;
+        _isHoldingAtHome = false;
         _currentHealth = Mathf.Max(1, maxHealth);
         EnsureObstacleAvoidanceLayer();
         RestoreDefaultRendererStates();
@@ -127,6 +135,7 @@ public class Enemy : ObjectSpawned
         _obstacleTargetLocalRotation = Quaternion.identity;
         _lastHandledObstacle = null;
         _lastHandledObstacleFrame = int.MinValue;
+        _isHoldingAtHome = false;
         _currentHealth = Mathf.Max(1, maxHealth);
         RestoreDefaultRendererStates();
         RefreshHealthBar(forceVisible: false);
@@ -192,6 +201,9 @@ public class Enemy : ObjectSpawned
     public bool TryHandleObstacleProbe(Collider obstacle, int frameCount, int cooldownFrames)
     {
         if (_isDead || obstacle == null || !IsObstacleLayer(obstacle.gameObject.layer))
+            return false;
+
+        if (_isHoldingAtHome)
             return false;
 
         if (obstacle.transform.IsChildOf(transform))
@@ -284,6 +296,13 @@ public class Enemy : ObjectSpawned
             return false;
         }
 
+        if (_isHoldingAtHome)
+        {
+            LogFlow(
+                $"Ignored home impact because enemy is already holding at Home. collisionLayer={collisionLayer} ('{LayerMask.LayerToName(collisionLayer)}').");
+            return false;
+        }
+
         if (!CanDealDamageOnCollisionLayer(collisionLayer))
         {
             LogFlow(
@@ -305,17 +324,27 @@ public class Enemy : ObjectSpawned
 
         LogFlow(
             $"Accepted home impact. collisionLayer={collisionLayer} ('{LayerMask.LayerToName(collisionLayer)}') " +
-            $"contactDamage={ContactDamage} canDespawn={CanDespawnOnCollisionLayer(collisionLayer)} " +
+            $"contactDamage={ContactDamage} stopAtHomeOnImpact={stopAtHomeOnImpact} " +
+            $"dealDamageToTeammateOnHomeImpact={dealDamageToTeammateOnHomeImpact} " +
+            $"canDespawn={CanDespawnOnCollisionLayer(collisionLayer)} " +
             $"worldPos={transform.position} spawner='{owningSpawner?.name ?? "<null>"}'.",
             owningSpawner,
             warning: true);
-        owningSpawner?.NotifyEnemyReachedHome(this, collisionLayer);
 
-        if (CanDespawnOnCollisionLayer(collisionLayer))
+        if (dealDamageToTeammateOnHomeImpact)
+            owningSpawner?.NotifyEnemyReachedHome(this, collisionLayer);
+        else
+            LogFlow(
+                $"Skipped teammate damage on Home impact because dealDamageToTeammateOnHomeImpact=false.",
+                owningSpawner);
+
+        if (stopAtHomeOnImpact)
+            BeginHoldAtHome(owningSpawner);
+        else if (CanDespawnOnCollisionLayer(collisionLayer))
             HandleHomeImpact(owningSpawner);
         else
             LogFlow(
-                $"Enemy dealt damage to Home but will stay alive because CanDespawnOnCollisionLayer=false for layer '{LayerMask.LayerToName(collisionLayer)}'.",
+                $"Enemy will stay alive after Home impact because stopAtHomeOnImpact=false and CanDespawnOnCollisionLayer=false for layer '{LayerMask.LayerToName(collisionLayer)}'.",
                 owningSpawner);
 
         return true;
@@ -380,9 +409,38 @@ public class Enemy : ObjectSpawned
         BufferedPoolDespawnQueue.Queue(this);
     }
 
+    private void BeginHoldAtHome(EnemySpawner owningSpawner)
+    {
+        if (_isDead || _isHoldingAtHome)
+            return;
+
+        _isHoldingAtHome = true;
+        _isMovingToObstacleSlot = false;
+        ReleaseBlockedSlotClaim();
+        ReleaseGridReservation();
+
+        Vector3 holdWorldPosition = transform.position;
+        Quaternion holdWorldRotation = transform.rotation;
+        transform.SetParent(null, true);
+        transform.SetPositionAndRotation(holdWorldPosition, holdWorldRotation);
+
+        if (owningSpawner != null)
+        {
+            owningSpawner.NotifyEnemyExitedGrid(this);
+            _owningSpawner = null;
+        }
+
+        LogLifecycleDebug(
+            $"[HomeHold] Enemy stopped at Home and detached from grid. worldPos={transform.position}.",
+            warning: true);
+    }
+
     private void HandleObstacleCollision(Collider other)
     {
         if (_isDead || other == null || !IsObstacleLayer(other.gameObject.layer))
+            return;
+
+        if (_isHoldingAtHome)
             return;
 
         if (other.transform.IsChildOf(transform))
@@ -393,6 +451,9 @@ public class Enemy : ObjectSpawned
 
     private void BeginOrRefreshObstacleReposition()
     {
+        if (_isHoldingAtHome)
+            return;
+
         EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
         if (owningSpawner == null)
             return;
