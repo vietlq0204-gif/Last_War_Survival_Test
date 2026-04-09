@@ -63,6 +63,7 @@ public class Enemy : ObjectSpawned
     private EnemySpawner _owningSpawner;
     private Renderer[] _cachedRenderers;
     private bool[] _defaultRendererStates;
+    private DamageShakeFeedback _damageShakeFeedback;
     private int _currentHealth;
     private bool _isDead;
     private bool _isMovingToObstacleSlot;
@@ -84,6 +85,7 @@ public class Enemy : ObjectSpawned
         base.Awake();
         EnsureObstacleAvoidanceLayer();
         CacheRenderers();
+        _damageShakeFeedback = GetComponentInChildren<DamageShakeFeedback>(true);
     }
 
     private void OnValidate()
@@ -147,6 +149,7 @@ public class Enemy : ObjectSpawned
         if (_isDead || damage <= 0)
             return false;
 
+        TriggerDamageShake();
         _currentHealth = Mathf.Max(0, _currentHealth - damage);
         RefreshHealthBar(forceVisible: true);
         if (_currentHealth > 0)
@@ -526,6 +529,14 @@ public class Enemy : ObjectSpawned
         {
             _defaultRendererStates[i] = _cachedRenderers[i] != null && _cachedRenderers[i].enabled;
         }
+    }
+
+    private void TriggerDamageShake()
+    {
+        if (_damageShakeFeedback == null)
+            _damageShakeFeedback = GetComponentInChildren<DamageShakeFeedback>(true);
+
+        _damageShakeFeedback?.PlayShake();
     }
 
     private void RefreshHealthBar(bool forceVisible)

@@ -152,6 +152,38 @@ public sealed class EnemyHomeDamageBatchEvent
     }
 }
 
+public sealed class ObstacleDespawnedEvent
+{
+    public Obstacle obstacle { get; set; }
+    public ObstacleSpawner sourceSpawner { get; set; }
+    public Vector3 worldPosition { get; set; }
+    public int slotIndex { get; set; }
+    public bool wasDestroyedByDamage { get; set; }
+
+    public ObstacleDespawnedEvent()
+    {
+        obstacle = null;
+        sourceSpawner = null;
+        worldPosition = Vector3.zero;
+        slotIndex = -1;
+        wasDestroyedByDamage = false;
+    }
+
+    public ObstacleDespawnedEvent(
+        Obstacle obstacle,
+        ObstacleSpawner sourceSpawner,
+        Vector3 worldPosition,
+        int slotIndex,
+        bool wasDestroyedByDamage)
+    {
+        this.obstacle = obstacle;
+        this.sourceSpawner = sourceSpawner;
+        this.worldPosition = worldPosition;
+        this.slotIndex = slotIndex;
+        this.wasDestroyedByDamage = wasDestroyedByDamage;
+    }
+}
+
 public sealed class TeammateWeaponPickupEvent
 {
     public Teammate collector { get; set; }
@@ -239,6 +271,11 @@ public static class CoreEvents
     /// Event batch khi enemy cham Home va da duoc tong hop damage theo EnemySpawner.
     /// </summary>
     public static readonly EventHub<EnemyHomeDamageBatchEvent> enemyHomeDamageBatch = new EventHub<EnemyHomeDamageBatchEvent>();
+
+    /// <summary>
+    /// Event khi obstacle despawn do bi pha huy trong gameplay.
+    /// </summary>
+    public static readonly EventHub<ObstacleDespawnedEvent> obstacleDespawned = new EventHub<ObstacleDespawnedEvent>();
 
     /// <summary>
     /// Event khi pickup weapon duoc teammate nhat.

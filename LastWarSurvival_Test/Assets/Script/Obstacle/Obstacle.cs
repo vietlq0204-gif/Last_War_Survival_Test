@@ -18,10 +18,13 @@ public sealed class Obstacle : ObjectSpawned
     private Transform _assignedSlot;
     private Renderer[] _cachedRenderers;
     private bool[] _defaultRendererStates;
+    private DamageShakeFeedback _damageShakeFeedback;
     private int _currentHealth;
     private int _slotIndex = -1;
     private bool _isDespawning;
     private bool _dropRewardOnDespawn;
+    private bool _raiseDespawnEvent;
+    private Vector3 _despawnEventWorldPosition;
 
     public ObstacleSO Data => obstacleData;
     public int MaxHealth => ResolveStartingHealth();
@@ -33,6 +36,7 @@ public sealed class Obstacle : ObjectSpawned
         base.Awake();
         ResolveHealthText();
         CacheRenderers();
+        _damageShakeFeedback = GetComponentInChildren<DamageShakeFeedback>(true);
     }
 
     private void OnValidate()
@@ -76,6 +80,8 @@ public sealed class Obstacle : ObjectSpawned
     {
         _isDespawning = false;
         _dropRewardOnDespawn = false;
+        _raiseDespawnEvent = false;
+        _despawnEventWorldPosition = Vector3.zero;
         _currentHealth = ResolveStartingHealth();
         RestoreDefaultRendererStates();
         RefreshHealthUi();
@@ -84,6 +90,16 @@ public sealed class Obstacle : ObjectSpawned
 
     public override void OnDespawnedToPool()
     {
+        if (_raiseDespawnEvent)
+        {
+            CoreEvents.obstacleDespawned.Raise(new ObstacleDespawnedEvent(
+                this,
+                _owningSpawner,
+                _despawnEventWorldPosition,
+                _slotIndex,
+                _dropRewardOnDespawn));
+        }
+
         if (_dropRewardOnDespawn)
             SpawnRewardIfNeeded();
 
@@ -93,6 +109,8 @@ public sealed class Obstacle : ObjectSpawned
         _slotIndex = -1;
         _isDespawning = false;
         _dropRewardOnDespawn = false;
+        _raiseDespawnEvent = false;
+        _despawnEventWorldPosition = Vector3.zero;
         _currentHealth = ResolveStartingHealth();
         RestoreDefaultRendererStates();
         RefreshHealthUi();
@@ -111,6 +129,7 @@ public sealed class Obstacle : ObjectSpawned
         if (_isDespawning || damage <= 0)
             return false;
 
+        TriggerDamageShake();
         _currentHealth = Mathf.Max(0, _currentHealth - damage);
         RefreshHealthUi();
         if (_currentHealth > 0)
@@ -125,7 +144,10 @@ public sealed class Obstacle : ObjectSpawned
         if (_isDespawning || !gameObject.activeInHierarchy)
             return false;
 
+        Transform targetTransform = CachedTransform != null ? CachedTransform : transform;
         _isDespawning = true;
+        _raiseDespawnEvent = true;
+        _despawnEventWorldPosition = targetTransform.position;
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
 
@@ -134,6 +156,8 @@ public sealed class Obstacle : ObjectSpawned
 
         _isDespawning = false;
         _dropRewardOnDespawn = false;
+        _raiseDespawnEvent = false;
+        _despawnEventWorldPosition = Vector3.zero;
         SetRenderersVisible(true);
         SetControlledCollisionEnabled(true);
         RefreshHealthUi();
@@ -225,6 +249,14 @@ public sealed class Obstacle : ObjectSpawned
         {
             _defaultRendererStates[i] = _cachedRenderers[i] != null && _cachedRenderers[i].enabled;
         }
+    }
+
+    private void TriggerDamageShake()
+    {
+        if (_damageShakeFeedback == null)
+            _damageShakeFeedback = GetComponentInChildren<DamageShakeFeedback>(true);
+
+        _damageShakeFeedback?.PlayShake();
     }
 
     private void RestoreDefaultRendererStates()
