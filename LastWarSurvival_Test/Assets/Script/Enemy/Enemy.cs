@@ -18,6 +18,14 @@ public class Enemy : ObjectSpawned
     [SerializeField, Min(0), Tooltip("Luong damage enemy gay ra khi cham vao Home.")]
     private int contactDamage = 1;
 
+    [Header("Health Bar")]
+    [SerializeField, Tooltip("Bat/tat thanh mau world-space tren dau enemy.")]
+    private bool showHealthBar = true;
+    [SerializeField, Tooltip("Reference toi component quan ly health bar duoc gan san tren prefab/inspector.")]
+    private EnemyHealthBarWorld healthBarView;
+    [SerializeField, Tooltip("Offset them cho thanh mau tinh theo world space.")]
+    private Vector3 healthBarOffset = new Vector3(0f, 0.35f, 0f);
+
     [SerializeField, Tooltip("Enemy co kha nang Despawn khi tuong tac voi cac layer duoc chon hay khong")]
     private bool canDespawnWithLayers = true;
     [SerializeField, Tooltip("Layer ma enemy co the Despawn.")]
@@ -58,7 +66,6 @@ public class Enemy : ObjectSpawned
     private Collider _cachedObstacleProbeCollider;
     private Collider _lastHandledObstacle;
     private int _lastHandledObstacleFrame = int.MinValue;
-
     public int MaxHealth => maxHealth;
     public int CurrentHealth => _currentHealth;
     public int ContactDamage => Mathf.Max(0, contactDamage);
@@ -78,6 +85,9 @@ public class Enemy : ObjectSpawned
         obstacleSlotDistance = Mathf.Max(0.05f, obstacleSlotDistance);
         obstacleArrivalDistance = Mathf.Max(0.05f, obstacleArrivalDistance);
         EnsureObstacleAvoidanceLayer();
+
+        if (Application.isPlaying)
+            RefreshHealthBar(forceVisible: !_isDead);
     }
 
     private void Update()
@@ -100,6 +110,7 @@ public class Enemy : ObjectSpawned
         EnsureObstacleAvoidanceLayer();
         RestoreDefaultRendererStates();
         SetControlledCollisionEnabled(true);
+        RefreshHealthBar(forceVisible: true);
 
         _owningSpawner = ResolveOwningSpawner();
         _owningSpawner?.RegisterSpawnedEnemy(this);
@@ -118,6 +129,7 @@ public class Enemy : ObjectSpawned
         _lastHandledObstacleFrame = int.MinValue;
         _currentHealth = Mathf.Max(1, maxHealth);
         RestoreDefaultRendererStates();
+        RefreshHealthBar(forceVisible: false);
         base.OnDespawnedToPool();
     }
 
@@ -127,6 +139,7 @@ public class Enemy : ObjectSpawned
             return false;
 
         _currentHealth = Mathf.Max(0, _currentHealth - damage);
+        RefreshHealthBar(forceVisible: true);
         if (_currentHealth > 0)
             return true;
 
@@ -165,6 +178,7 @@ public class Enemy : ObjectSpawned
         _isMovingToObstacleSlot = false;
         ReleaseBlockedSlotClaim();
         ReleaseGridReservation();
+        RefreshHealthBar(forceVisible: false);
 
         EnemySpawner owningSpawner = _owningSpawner != null ? _owningSpawner : ResolveOwningSpawner();
         owningSpawner?.NotifyEnemyExitedGrid(this);
@@ -332,6 +346,7 @@ public class Enemy : ObjectSpawned
         ReleaseGridReservation();
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
+        RefreshHealthBar(forceVisible: false);
         _owningSpawner?.NotifyEnemyDefeated(this);
         BufferedPoolDespawnQueue.Queue(this);
     }
@@ -361,6 +376,7 @@ public class Enemy : ObjectSpawned
 
         SetControlledCollisionEnabled(false);
         SetRenderersVisible(false);
+        RefreshHealthBar(forceVisible: false);
         BufferedPoolDespawnQueue.Queue(this);
     }
 
@@ -449,6 +465,30 @@ public class Enemy : ObjectSpawned
         {
             _defaultRendererStates[i] = _cachedRenderers[i] != null && _cachedRenderers[i].enabled;
         }
+    }
+
+    private void RefreshHealthBar(bool forceVisible)
+    {
+        EnemyHealthBarWorld healthBarView = ResolveHealthBarView();
+        if (healthBarView == null)
+            return;
+
+        healthBarView.Bind(this);
+        healthBarView.Configure(showHealthBar && forceVisible && gameObject.activeInHierarchy, healthBarOffset);
+        healthBarView.Refresh(_currentHealth, MaxHealth);
+    }
+
+    private EnemyHealthBarWorld ResolveHealthBarView()
+    {
+        if (healthBarView != null)
+            return healthBarView;
+
+        healthBarView = GetComponent<EnemyHealthBarWorld>();
+        if (healthBarView != null)
+            return healthBarView;
+
+        healthBarView = GetComponentInChildren<EnemyHealthBarWorld>(true);
+        return healthBarView;
     }
 
     private void EnsureObstacleProbeColliderCache()
